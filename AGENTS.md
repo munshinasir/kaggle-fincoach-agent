@@ -5,39 +5,62 @@
 Multi-agent financial coach. See `.agents-cli-spec.md` for the full spec (overview, constraints,
 success criteria). Summary:
 
-**Pipeline** (`app/agent.py`, `SequentialAgent`):
+**Pipeline** (`app/agent.py`, `SequentialAgent` — Phase 1 of the v2 plan; Phase 2 wraps this in a
+`Workflow`, see `.agents-cli-spec.md` and `next_steps.md` for the full v2 roadmap):
 
 ```
 FinanceCoordinatorAgent
- ├─ TransactionFetcherAgent  (tools=[McpToolset(...)], no output_schema — output_schema disables
- │                            tool calling, so this agent owns the MCP call and nothing else)
+ ├─ TransactionFetcherAgent  (tools=[McpToolset(...)], plain text output — a single-responsibility
+ │                            choice, not a technical requirement: output_schema and tool-calling
+ │                            can coexist in the installed google-adk 2.3.0)
  │                            → state['raw_transactions']
  ├─ BudgetAnalysisAgent      (output_schema=BudgetAnalysis)
  │                            reads {raw_transactions} + user-provided income/dependants/manual expenses
- │                            → state['budget_analysis']
+ │                            → state['budget_analysis']  (spending_categories, savings_categories,
+ │                              spending_analysis — descriptive only, acknowledgments — positive
+ │                              callouts, savings_rate)
  ├─ SavingsStrategyAgent     (output_schema=SavingsStrategy)
- │                            reads {budget_analysis}
+ │                            reads {budget_analysis}; owns prescriptive spending-cut + savings-
+ │                            allocation recommendations, intent-branches on savings_rate/emergency
+ │                            fund, analyzes (never prescribes) debt via debt_context handoff
  │                            → state['savings_strategy']
- └─ DebtReductionAgent       (output_schema=DebtReduction)
-                              reads {budget_analysis}, {savings_strategy} + user-provided debts
-                              → state['debt_reduction']
+ ├─ DebtReductionAgent       (output_schema=DebtReduction)
+ │                            reads {budget_analysis}, {savings_strategy} (incl. debt_context) +
+ │                            user-provided debts; owns all debt prescriptions and the invest-vs-
+ │                            payoff split (vehicle-level investing only, never a specific pick)
+ │                            → state['debt_reduction']
+ └─ OverallPictureAgent      (output_schema=OverallPicture)
+                              reads {budget_analysis}, {savings_strategy}, {debt_reduction}; merges
+                              into one prioritized, affirming "next steps" list — no new analysis
+                              → state['overall_picture']
 ```
 
-This project pins `google-adk>=2.0.0,<3.0.0`. It uses `Agent`/`SequentialAgent` from
-`google.adk.agents` with `output_schema`/`output_key` for structured, state-passing output, served
-via the generated `app/fast_api_app.py` + `app_utils/` (do not hand-edit those). Verify any ADK API
-usage against the installed `google-adk` package or `/google-agents-cli-adk-code` — never assume
-an API shape from memory.
+This project pins `google-adk>=2.0.0,<3.0.0` (installed: 2.3.0). It uses `Agent`/`SequentialAgent`
+from `google.adk.agents` with `output_schema`/`output_key` for structured, state-passing output,
+served via the generated `app/fast_api_app.py` + `app_utils/` (do not hand-edit those). Verify any
+ADK API usage against the installed `google-adk` package or `/google-agents-cli-adk-code` — never
+assume an API shape from memory. Note: `SequentialAgent` is `@deprecated` in 2.3.0 ("use Workflow
+instead") — still functional, kept for Phase 1, migrating to `Workflow`/`@node` in Phase 2.
 
 **Invariants** (see `.agents-cli-spec.md` → Constraints & Safety Rules for the full list):
 - Never fabricate a financial figure not derivable from input or transaction data.
-- Never give buy/sell investment advice — budgeting/savings/debt guidance only.
-- Spending category percentages must sum to 100%.
+- No specific stock/fund/asset picks — vehicle/category-level investing only (e.g. "a low-cost
+  index fund"), and only from `debt-reduction`, informed by the invest-vs-payoff threshold logic.
+- Spending category percentages must sum to 100% (of `total_expenses`); savings category
+  percentages must sum to 100% of `total_surplus`.
+- Never recommend reducing or skipping a minimum/regular debt payment, for any reason.
 - No persistent storage of income/debt/personal data — in-memory session only for MVP.
 
 **Skills**: each analysis agent's instruction lives in `skills/<name>/SKILL.md`, not inline —
-`budget-analysis`, `savings-strategy`, `debt-reduction`. `TransactionFetcherAgent`'s instruction is
-trivial (call the tool, pass through the result) and stays inline.
+`budget-analysis`, `savings-strategy`, `debt-reduction`, `overall-picture`. `TransactionFetcherAgent`'s
+instruction is trivial (call the tool, pass through the result) and stays inline.
+
+**Ownership chain** (the core architectural rule extended through Phase 1 — see `next_steps.md` for
+the full v2 requirements this implements): `budget-analysis` only describes, never prescribes;
+`savings-strategy` prescribes spending/savings actions but only *analyzes* debt (via `debt_context`);
+`debt-reduction` owns every debt and invest-vs-payoff prescription; `overall-picture` merges, never
+adds new analysis. If you're tempted to add a recommendation to the "wrong" agent, it belongs
+downstream instead.
 
 ---
 

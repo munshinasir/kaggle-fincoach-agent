@@ -1,6 +1,8 @@
 metrics_to_run:
   - custom_response_quality
   - budget_categories_valid
+  - savings_debt_boundary_valid
+  - savings_reconciliation_valid
 
 custom_metrics:
   # Default: local LLM-as-judge defined in metrics.py (a real, lintable/testable
@@ -18,3 +20,11 @@ custom_metrics:
   # (no debt-payment leakage) and percentages sum to 100%.
   - name: budget_categories_valid
     custom_function_file: budget_category_metric.py
+  # Ownership-boundary check (v2 Phase 1): savings-strategy must analyze debt via
+  # debt_context but never name/prescribe a specific debt itself — that's debt-reduction's job.
+  - name: savings_debt_boundary_valid
+    custom_function_file: savings_debt_boundary_metric.py
+  # Reconciliation check (v2 Phase 1): savings-strategy's recommendations + debt
+  # minimums + available_surplus_after_savings must equal total_surplus exactly.
+  - name: savings_reconciliation_valid
+    custom_function_file: savings_reconciliation_metric.py

@@ -74,6 +74,9 @@ class BudgetAnalysis(BaseModel):
         None,
         description="monthly_income minus total_expenses; 0 if expenses meet or exceed income",
     )
+    savings_rate: float | None = Field(
+        None, description="total_surplus / monthly_income, as a fraction (e.g. 0.2 for 20%)"
+    )
     spending_categories: list[SpendingCategory] = Field(
         ..., description="Breakdown of spending by category"
     )
@@ -83,6 +86,10 @@ class BudgetAnalysis(BaseModel):
     )
     spending_analysis: list[SpendingAnalysis] = Field(
         ..., description="Descriptive observations on notable spending categories — not recommendations"
+    )
+    acknowledgments: list[str] = Field(
+        default_factory=list,
+        description="Positive callouts only (e.g. savings_rate >= 20%, a category well under typical ratios) — never mixed with analysis or recommendations",
     )
 
 
@@ -109,17 +116,41 @@ class AutomationTechnique(BaseModel):
     description: str = Field(..., description="Details of how to implement")
 
 
+class DebtContext(BaseModel):
+    debt_to_income_ratio: float | None = Field(
+        None, description="Total monthly debt payments / monthly_income, as a fraction"
+    )
+    available_surplus_after_savings: float = Field(
+        ..., description="total_surplus minus what this skill allocated to its own recommendations"
+    )
+    has_emergency_fund: bool | None = Field(
+        None, description="None if unknown/unstated — do not assume false without saying so"
+    )
+    note: str = Field(
+        ...,
+        description=(
+            "Descriptive handoff for debt-reduction — facts only (surplus amount, DTI ratio, "
+            "that debt exists), no directive verbs (should/prioritize/apply toward/recommend). "
+            "Which debt to focus on and how belongs entirely to debt-reduction."
+        ),
+    )
+
+
 class SavingsStrategy(BaseModel):
     emergency_fund: EmergencyFund = Field(..., description="Emergency fund recommendation")
     recommendations: list[SavingsRecommendation] = Field(
         ...,
         description=(
             "Combined, deduplicated recommendations — both savings allocations and "
-            "spending-reduction actions derived from the budget analysis"
+            "spending-reduction actions derived from the budget analysis. Never names a "
+            "specific debt or a dollar amount to direct at one — see debt_context."
         ),
     )
     automation_techniques: list[AutomationTechnique] | None = Field(
         None, description="Automation techniques to help save"
+    )
+    debt_context: DebtContext = Field(
+        ..., description="Analysis handoff for debt-reduction — see DebtContext"
     )
 
 
@@ -156,10 +187,32 @@ class DebtReduction(BaseModel):
     )
 
 
+class NextStep(BaseModel):
+    category: str = Field(..., description="What this step targets")
+    action: str = Field(..., description="The concrete action to take")
+    amount: float | None = Field(None, description="Dollar amount involved, if any")
+    priority: int = Field(..., description="1 = highest priority, ascending from there")
+
+
+class OverallPicture(BaseModel):
+    wins: list[str] = Field(
+        ..., description="Positive callouts pulled from budget_analysis and elsewhere — never empty if any exist upstream"
+    )
+    next_steps: list[NextStep] = Field(
+        ...,
+        description=(
+            "One merged, prioritized list combining savings_strategy's and debt_reduction's "
+            "recommendations — not two lists stapled together"
+        ),
+    )
+
+
 # --- Sub-agents ---
-# TransactionFetcherAgent owns the MCP tool call. It cannot also use output_schema
-# (output_schema disables tool calling in ADK) so it stays a plain text-output agent
-# and hands its result to the next agent via output_key + shared state.
+# TransactionFetcherAgent owns the MCP tool call and stays a plain text-output agent,
+# handing its result to the next agent via output_key + shared state. (Note: in the
+# installed google-adk 2.3.0, output_schema and tool-calling can actually coexist on
+# one Agent — verified via llm_agent.py/_output_schema_processor.py source — so this
+# split is now a single-responsibility choice, not a technical requirement.)
 
 transaction_fetcher_agent = Agent(
     name="TransactionFetcherAgent",
@@ -225,6 +278,18 @@ debt_reduction_agent = Agent(
     output_key="debt_reduction",
 )
 
+overall_picture_agent = Agent(
+    name="OverallPictureAgent",
+    model=_model(),
+    description="Synthesizes budget, savings, and debt analysis into one consolidated, prioritized picture",
+    instruction=(
+        _load_skill_instruction("overall-picture")
+        + "\n\nBudget analysis: {budget_analysis}\nSavings strategy: {savings_strategy}\nDebt reduction: {debt_reduction}"
+    ),
+    output_schema=OverallPicture,
+    output_key="overall_picture",
+)
+
 root_agent = SequentialAgent(
     name="FinanceCoordinatorAgent",
     description="Coordinates specialized finance agents to provide comprehensive financial advice",
@@ -233,6 +298,7 @@ root_agent = SequentialAgent(
         budget_analysis_agent,
         savings_strategy_agent,
         debt_reduction_agent,
+        overall_picture_agent,
     ],
 )
 
