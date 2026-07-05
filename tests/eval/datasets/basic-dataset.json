@@ -1,0 +1,15 @@
+{
+  "eval_cases": [
+    {
+      "eval_case_id": "budget_categories_match_input",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "My monthly income is 5000, I have 2 dependants. My expenses are: Housing 1500, Food 600, Transportation 300, Utilities 200, Entertainment 100, Healthcare 80, Personal 120, Other 100. I have one debt: Credit Card, amount 4000, interest rate 22%, minimum payment 100. Please analyze my finances."
+          }
+        ]
+      }
+    }
+  ]
+}

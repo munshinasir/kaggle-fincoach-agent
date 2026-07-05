@@ -1,0 +1,20 @@
+metrics_to_run:
+  - custom_response_quality
+  - budget_categories_valid
+
+custom_metrics:
+  # Default: local LLM-as-judge defined in metrics.py (a real, lintable/testable
+  # module) rather than an inline blob. It runs in-process via google-genai, so it
+  # grades on BOTH Vertex (ADC) and Google AI Studio (GEMINI_API_KEY) with no
+  # managed Vertex eval service -- genai.Client() auto-selects the backend from the
+  # project's .env (loaded by `eval grade`). It uses each case's `reference` (ground
+  # truth) when present. To use the managed Vertex eval service instead (rubric
+  # LLMMetric; needs a GCP project), see the eval skill's metrics-guide.
+  - name: custom_response_quality
+    custom_function_file: metrics.py
+  # Deterministic regression check for the "invented spending category" bug
+  # found during manual smoke testing (see AGENTS.md / Day5 plan doc): asserts
+  # BudgetAnalysisAgent's spending_categories match the input expenses exactly
+  # (no debt-payment leakage) and percentages sum to 100%.
+  - name: budget_categories_valid
+    custom_function_file: budget_category_metric.py
