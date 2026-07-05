@@ -10,19 +10,17 @@ Phase 3 (Critic/Refine with the realism rubric), `threat_model.md`, deployment.
 
 ---
 
-## Open design question for the client (not yet resolved)
+## Design decision: investing vs. debt payoff threshold (resolved 2026-07-05)
 
-**Investing vs. debt payoff — sequential threshold or proportional split?** Tested against the
-worked example (0.99% car loan, 5.99% student loan, $1000-1550/mo surplus depending on scenario):
-`debt-reduction`'s current instruction (a hard 6% threshold, all above-threshold debt paid first,
-investing only once no debt exceeds the threshold) resulted in **zero investing allocation** in
-every test run — the 5.99% loan sits just under the 6% cutoff but the model kept prioritizing it
-over investing anyway (in one run, correctly noticing the loan's minimum payment doesn't even cover
-accruing interest — a real, well-reasoned override of the threshold, not a bug). Requirement 7 said
-"encouraged to invest in index funds *in proportion to* reducing debt," which reads more like an
-intentional blended split than a strict sequential cutoff. Worth deciding: keep the threshold logic
-(model already overrides it when there's a compelling reason, as seen above) or make the split
-explicitly proportional (e.g. a fixed 70/30 debt/invest ratio above some DTI band)?
+Tested against the worked example (0.99% car loan, 5.99% student loan, $1000-1550/mo surplus
+depending on scenario): `debt-reduction`'s threshold-based instruction (all above-threshold debt
+paid first, investing only once no debt exceeds the threshold) resulted in zero investing
+allocation in every test run at a 6% threshold — the 5.99% loan sat just under the cutoff but the
+model kept prioritizing it over investing anyway (in one run, correctly noticing the loan's minimum
+payment doesn't even cover accruing interest — a well-reasoned override, not a bug). Requirement 7's
+"invest *in proportion to* reducing debt" reads more like a blended split than a strict cutoff, but
+**decision: keep the sequential threshold approach, raise it from 6% to 8%** — revisit only if
+real usage shows it still never triggers investing. No proportional-split logic planned for now.
 
 ## Eval backlog
 
