@@ -113,11 +113,14 @@ def _find_pending_question(events: list) -> dict | None:
 def _render_results(message: str, events: list) -> str:
     blocks = []
     for event in events:
-        if not event.content or not event.content.parts:
-            continue
-        for part in event.content.parts:
-            if part.text:
-                blocks.append((event.author, part.text))
+        found_text = False
+        if event.content and event.content.parts:
+            for part in event.content.parts:
+                if part.text:
+                    blocks.append((event.author, part.text))
+                    found_text = True
+        if not found_text and isinstance(event.output, str) and event.output:
+            blocks.append((event.author, event.output))
 
     results_html = ""
     for author, text in blocks:
