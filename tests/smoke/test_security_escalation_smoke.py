@@ -113,7 +113,8 @@ async def run_scenario(
     *additionally* mentions a redacted PII type depends on whether
     TransactionFetcherAgent's upstream extraction happened to carry that
     PII through verbatim, which is reliable for typed text but not for
-    file-derived text (see task-7-report.md) — so this check is opt-out for
+    file-derived text (the model's transcription of PII out of a document
+    isn't guaranteed to be verbatim) — so this check is opt-out for
     file-based scenarios rather than a hardcoded assumption.
     """
     session_service = InMemorySessionService()
@@ -165,8 +166,9 @@ async def main() -> None:
     await run_scenario(proceed=False, label="text", build_message=make_dirty_text_message)
     await run_scenario(proceed=True, label="text", build_message=make_dirty_text_message)
     # File-derived text: TransactionFetcherAgent doesn't reliably carry PII verbatim
-    # out of an uploaded document (see task-7-report.md), so these scenarios only
-    # assert on injection-phrase detection/stripping, not on the PII-redaction wording.
+    # out of an uploaded document (the model's transcription isn't guaranteed to
+    # preserve PII verbatim), so these scenarios only assert on injection-phrase
+    # detection/stripping, not on the PII-redaction wording.
     await run_scenario(proceed=False, label="file", build_message=make_dirty_file_message, check_pii_redaction=False)
     await run_scenario(proceed=True, label="file", build_message=make_dirty_file_message, check_pii_redaction=False)
     print("\nAll security escalation smoke assertions passed.")

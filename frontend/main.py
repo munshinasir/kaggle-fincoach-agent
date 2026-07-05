@@ -119,7 +119,20 @@ def _render_results(message: str, events: list) -> str:
                 if part.text:
                     blocks.append((event.author, part.text))
                     found_text = True
-        if not found_text and isinstance(event.output, str) and event.output:
+        # security_checkpoint's own routing event and halted_node's echo of it
+        # both carry event.author == "FinanceCoachWorkflow" (the root Workflow's
+        # name — plain-function nodes don't get their own author identity) and
+        # the identical halt text on event.output, so author can't tell them
+        # apart. event.node_info.name (ADK's clean per-node name, stripped of
+        # the "@run_id" suffix) does: it's "security_checkpoint" for that node's
+        # own clean/halted-route events and "halted_node" only for halted_node's
+        # echo, which is the one we want to surface exactly once.
+        if (
+            not found_text
+            and getattr(event.node_info, "name", None) == "halted_node"
+            and isinstance(event.output, str)
+            and event.output
+        ):
             blocks.append((event.author, event.output))
 
     results_html = ""

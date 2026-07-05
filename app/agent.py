@@ -602,7 +602,11 @@ async def security_checkpoint(ctx: Context, node_input: str) -> AsyncGenerator[E
         answer = ctx.resume_inputs[interrupt_id]
         scrubbed_text = ctx.state.get("security_scrubbed_text", "")
         if answer.get("proceed"):
-            yield Event(output=scrubbed_text, route="clean")
+            yield Event(
+                output=scrubbed_text,
+                route="clean",
+                state={"raw_transactions": scrubbed_text},
+            )
         else:
             yield Event(
                 output="Stopped at your request after a security check.",
@@ -614,7 +618,11 @@ async def security_checkpoint(ctx: Context, node_input: str) -> AsyncGenerator[E
     scrubbed, flagged_phrases = strip_injection_phrases(scrubbed)
 
     if not flagged_phrases:
-        yield Event(output=scrubbed, route="clean", state={"security_redacted_types": redacted_types})
+        yield Event(
+            output=scrubbed,
+            route="clean",
+            state={"security_redacted_types": redacted_types, "raw_transactions": scrubbed},
+        )
         return
 
     message = (

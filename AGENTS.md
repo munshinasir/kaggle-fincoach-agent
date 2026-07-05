@@ -29,7 +29,9 @@ FinanceCoachWorkflow (Workflow, resumability_config=ResumabilityConfig(is_resuma
  │                            to intake_loop with no visible interruption; routes to a RequestInput
  │                            interrupt only when injection was found, asking the user to proceed
  │                            (continue with the cleaned text) or stop (routes to halted_node,
- │                            which ends the run — analysis_pipeline never executes).
+ │                            which ends the run — analysis_pipeline never executes). (See
+ │                            threat_model.md's Tampering row for a document-vs-typed-input
+ │                            nuance in PII redaction reliability.)
  ├─ → intake_loop            (@node(rerun_on_resume=True), async generator; bounded to
  │                            MAX_INTAKE_ROUNDS=2). Calls IntakeAgent (output_schema=
  │                            IntakeAssessment) via ctx.run_node() each round; if it flags
