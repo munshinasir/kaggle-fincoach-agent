@@ -6,7 +6,7 @@
         "role": "user",
         "parts": [
           {
-            "text": "My monthly income is 5000, I have 2 dependants. My expenses are: Housing 1500, Food 600, Transportation 300, Utilities 200, Entertainment 100, Healthcare 80, Personal 120, Other 100. I have one debt: Credit Card, amount 4000, interest rate 22%, minimum payment 100. Please analyze my finances."
+            "text": "My monthly income is 5000, I have 2 dependants. My expenses are: Housing 1500, Food 600, Transportation 300, Utilities 200, Entertainment 100, Healthcare 80, Personal 120 (haircuts and toiletries), Other 100 (annual software subscriptions). I have one debt: Credit Card, amount 4000, interest rate 22%, minimum payment 100. The roughly $1,900 left over each month currently just sits in my checking account — I don't have a separate emergency fund or any investment accounts yet. Please analyze my finances."
           }
         ]
       }

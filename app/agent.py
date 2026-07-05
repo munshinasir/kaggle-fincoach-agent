@@ -4,16 +4,23 @@ See AGENTS.md and .agents-cli-spec.md for the full spec.
 """
 
 import sys
+from collections.abc import AsyncGenerator
 from pathlib import Path
 
 from google.adk.agents import Agent, SequentialAgent
-from google.adk.apps import App
+from google.adk.agents.context import Context
+from google.adk.apps import App, ResumabilityConfig
+from google.adk.events.event import Event
+from google.adk.events.request_input import RequestInput
 from google.adk.models import Gemini
 from google.adk.tools.mcp_tool import McpToolset
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
+from google.adk.workflow import START, Workflow, node
 from google.genai import types
 from mcp import StdioServerParameters
 from pydantic import BaseModel, Field
+
+MAX_INTAKE_ROUNDS = 2
 
 SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
 MCP_SERVER_SCRIPT = Path(__file__).resolve().parent / "transactions_mcp_server.py"
@@ -207,6 +214,40 @@ class OverallPicture(BaseModel):
     )
 
 
+class IntakeQnA(BaseModel):
+    question: str = Field(..., description="The clarifying question asked in this round")
+    answer: str = Field(..., description="The user's answer to that question")
+
+
+class IntakeAssessment(BaseModel):
+    needs_clarification: bool = Field(
+        ..., description="True if the request has vague/unlabeled categories, unexplained surplus, or missing emergency-fund/investment info worth asking about"
+    )
+    question: str | None = Field(
+        None,
+        description="One combined question covering everything outstanding this round — never multiple separate questions",
+    )
+    target_fields: list[str] = Field(
+        default_factory=list, description="Which fields/categories this question is trying to clarify"
+    )
+    rationale: str | None = Field(None, description="Why clarification is (or isn't) needed")
+
+
+class IntakeAnswer(BaseModel):
+    answer: str = Field("", description="The user's free-text answer")
+    skip_remaining: bool = Field(
+        False, description="True if the user wants to proceed to analysis without answering further"
+    )
+
+
+class EnrichedIntake(BaseModel):
+    original_request: str = Field(..., description="The user's original request, verbatim")
+    qna: list[IntakeQnA] = Field(default_factory=list, description="Clarification rounds completed, in order")
+    proceeded_without_full_info: bool = Field(
+        False, description="True if the intake loop stopped (cap or skip) before all ambiguity was resolved"
+    )
+
+
 # --- Sub-agents ---
 # TransactionFetcherAgent owns the MCP tool call and stays a plain text-output agent,
 # handing its result to the next agent via output_key + shared state. (Note: in the
@@ -226,7 +267,10 @@ transaction_fetcher_agent = Agent(
         "none is given) and return ONLY the raw tool result as compact JSON, with no other text.\n\n"
         "If the user already provided manual expense data instead, do not call the tool. Return "
         "ONLY that data restated as compact JSON (income, dependants, expenses, debts) — no "
-        "commentary, no analysis, no formatting beyond the JSON itself."
+        "commentary, no analysis, no formatting beyond the JSON itself. Include a `notes` field "
+        "with any other context the user stated verbatim (e.g. where a surplus currently goes, "
+        "an existing emergency fund or investment account) — never drop it and never fold it into "
+        "`expenses`, since it isn't a spending category."
     ),
     tools=[
         McpToolset(
@@ -242,6 +286,14 @@ transaction_fetcher_agent = Agent(
     output_key="raw_transactions",
 )
 
+intake_agent = Agent(
+    name="IntakeAgent",
+    model=_model(),
+    description="Decides whether the user's request needs clarification before analysis, and drafts one combined question if so.",
+    instruction=_load_skill_instruction("intake-clarification"),
+    output_schema=IntakeAssessment,
+)
+
 budget_analysis_agent = Agent(
     name="BudgetAnalysisAgent",
     model=_model(),
@@ -249,6 +301,7 @@ budget_analysis_agent = Agent(
     instruction=(
         _load_skill_instruction("budget-analysis")
         + "\n\nTransactions fetched via MCP, if any: {raw_transactions}"
+        + "\n\nIntake clarifications gathered before analysis, if any: {enriched_intake}"
     ),
     output_schema=BudgetAnalysis,
     output_key="budget_analysis",
@@ -290,11 +343,10 @@ overall_picture_agent = Agent(
     output_key="overall_picture",
 )
 
-root_agent = SequentialAgent(
+analysis_pipeline = SequentialAgent(
     name="FinanceCoordinatorAgent",
     description="Coordinates specialized finance agents to provide comprehensive financial advice",
     sub_agents=[
-        transaction_fetcher_agent,
         budget_analysis_agent,
         savings_strategy_agent,
         debt_reduction_agent,
@@ -302,7 +354,75 @@ root_agent = SequentialAgent(
     ],
 )
 
+
+@node(rerun_on_resume=True)
+async def intake_loop(ctx: Context, node_input: str) -> AsyncGenerator[Event, None]:
+    """Bounded (max 2 rounds) clarification loop, run before analysis_pipeline.
+
+    Batches everything IntakeAgent flags into one combined question per round.
+    Stops early if IntakeAgent finds nothing to ask, or the user sets
+    skip_remaining=True. Always ends by writing state['enriched_intake'] —
+    analysis_pipeline's SequentialAgent doesn't consume node_input directly,
+    so the handoff goes through state, matching the {state_var} convention
+    every other agent in this pipeline already uses.
+    """
+    original_request = node_input
+    qna: list[dict] = list(ctx.state.get("intake_qna") or [])
+    round_num = len(qna)
+
+    interrupt_id = f"intake_round_{round_num}"
+    if interrupt_id in ctx.resume_inputs:
+        answer = ctx.resume_inputs[interrupt_id]
+        if answer.get("skip_remaining"):
+            enriched = EnrichedIntake(
+                original_request=original_request,
+                qna=[IntakeQnA(**q) for q in qna],
+                proceeded_without_full_info=True,
+            ).model_dump()
+            yield Event(output=enriched, state={"enriched_intake": enriched})
+            return
+        pending_question = ctx.state.get("intake_pending_question", "")
+        qna = qna + [{"question": pending_question, "answer": answer.get("answer", "")}]
+        round_num += 1
+
+    if round_num < MAX_INTAKE_ROUNDS:
+        assessment = await ctx.run_node(
+            intake_agent,
+            node_input={"original_request": original_request, "qna": qna},
+            run_id=f"assess_{round_num}",
+        )
+        if assessment.get("needs_clarification"):
+            question = assessment.get("question") or (
+                "Could you clarify any vague or missing details in your request?"
+            )
+            yield Event(state={"intake_qna": qna, "intake_pending_question": question})
+            yield RequestInput(
+                interrupt_id=f"intake_round_{round_num}",
+                message=question,
+                response_schema=IntakeAnswer,
+            )
+            return
+
+    enriched = EnrichedIntake(
+        original_request=original_request,
+        qna=[IntakeQnA(**q) for q in qna],
+        proceeded_without_full_info=round_num >= MAX_INTAKE_ROUNDS and bool(qna),
+    ).model_dump()
+    yield Event(output=enriched, state={"enriched_intake": enriched})
+
+
+root_agent = Workflow(
+    name="FinanceCoachWorkflow",
+    description="Coordinates transaction intake, clarification, and the budget/savings/debt analysis pipeline.",
+    edges=[
+        (START, transaction_fetcher_agent),
+        (transaction_fetcher_agent, intake_loop),
+        (intake_loop, analysis_pipeline),
+    ],
+)
+
 app = App(
     root_agent=root_agent,
     name="app",
+    resumability_config=ResumabilityConfig(is_resumable=True),
 )

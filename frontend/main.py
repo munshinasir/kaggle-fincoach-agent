@@ -3,7 +3,10 @@
 A single text box where a user describes their financial situation in
 natural language. Runs the agent locally via the ADK Runner (in-process —
 no separate `agents-cli playground` server required) and renders each
-sub-agent's output. Run with: `uv run uvicorn frontend.main:app --port 8080`
+sub-agent's output. Handles the intake/clarification loop's pauses: when
+the workflow interrupts to ask a question, this renders the question and
+resumes the same session with the user's answer. Run with:
+`uv run uvicorn frontend.main:app --port 8080`
 """
 
 import html
@@ -20,12 +23,18 @@ from google.adk.runners import Runner  # noqa: E402
 from google.adk.sessions import InMemorySessionService  # noqa: E402
 from google.genai import types  # noqa: E402
 
-from app.agent import root_agent  # noqa: E402
+from app.agent import app as adk_app  # noqa: E402
 
-app = FastAPI(title="financial-coach-agent frontend")
+fastapi_app = FastAPI(title="financial-coach-agent frontend")
+
+_REQUEST_INPUT_FUNCTION_CALL_NAME = "adk_request_input"
 
 _session_service = InMemorySessionService()
-_runner = Runner(agent=root_agent, app_name="app", session_service=_session_service)
+_runner = Runner(app=adk_app, session_service=_session_service)
+
+# session_id -> {"interrupt_id": str, "message": str}, for sessions currently
+# paused waiting on a clarifying answer. Local dev only — in-memory is fine.
+_pending: dict[str, dict] = {}
 
 _PAGE_HEAD = """<!DOCTYPE html>
 <html lang="en">
@@ -40,6 +49,8 @@ _PAGE_HEAD = """<!DOCTYPE html>
   .agent-block { border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin: 16px 0; }
   .agent-block h2 { margin-top: 0; font-size: 1.05rem; }
   pre { white-space: pre-wrap; word-break: break-word; background: #f6f6f6; padding: 12px; border-radius: 6px; }
+  .question-block { border: 1px solid #f0c040; background: #fffbea; border-radius: 8px; padding: 16px; margin: 16px 0; }
+  label { display: block; margin-top: 10px; }
 </style>
 </head>
 <body>
@@ -53,28 +64,36 @@ _FORM = """<form method="post" action="/analyze">
 </form>
 """
 
+_QUESTION_FORM = """<div class="question-block">
+  <h2>One quick question before I analyze this</h2>
+  <p>{question}</p>
+  <form method="post" action="/resume">
+    <input type="hidden" name="session_id" value="{session_id}">
+    <textarea name="answer" placeholder="Your answer..."></textarea>
+    <label><input type="checkbox" name="skip_remaining" value="1"> Skip further questions, just analyze what I've given you</label>
+    <button type="submit">Submit</button>
+  </form>
+</div>
+"""
+
 _FOOT = "</body></html>"
 
 
-@app.get("/", response_class=HTMLResponse)
-async def index() -> str:
-    return _PAGE_HEAD + _FORM.format(prefill="") + _FOOT
+def _find_pending_question(events: list) -> dict | None:
+    """Returns {"interrupt_id", "message"} if the run paused on a clarifying question, else None."""
+    for event in reversed(events):
+        if not event.content or not event.content.parts:
+            continue
+        for part in event.content.parts:
+            fc = part.function_call
+            if fc and fc.name == _REQUEST_INPUT_FUNCTION_CALL_NAME:
+                return {"interrupt_id": fc.id, "message": (fc.args or {}).get("message", "")}
+    return None
 
 
-@app.post("/analyze", response_class=HTMLResponse)
-async def analyze(message: str = Form(...)) -> str:
-    session_id = str(uuid.uuid4())
-    user_id = "web_user"
-    await _session_service.create_session(
-        app_name="app", user_id=user_id, session_id=session_id
-    )
-
+def _render_results(message: str, events: list) -> str:
     blocks = []
-    async for event in _runner.run_async(
-        user_id=user_id,
-        session_id=session_id,
-        new_message=types.Content(role="user", parts=[types.Part.from_text(text=message)]),
-    ):
+    for event in events:
         if not event.content or not event.content.parts:
             continue
         for part in event.content.parts:
@@ -100,6 +119,74 @@ async def analyze(message: str = Form(...)) -> str:
         + _FOOT
     )
 
+
+async def _run_turn(session_id: str, message_for_display: str, new_message: types.Content) -> str:
+    events = [
+        event
+        async for event in _runner.run_async(
+            user_id="web_user",
+            session_id=session_id,
+            new_message=new_message,
+        )
+    ]
+
+    pending = _find_pending_question(events)
+    if pending is not None:
+        _pending[session_id] = pending
+        return (
+            _PAGE_HEAD
+            + _QUESTION_FORM.format(
+                question=html.escape(pending["message"]),
+                session_id=session_id,
+            )
+            + _FOOT
+        )
+
+    _pending.pop(session_id, None)
+    return _render_results(message_for_display, events)
+
+
+@fastapi_app.get("/", response_class=HTMLResponse)
+async def index() -> str:
+    return _PAGE_HEAD + _FORM.format(prefill="") + _FOOT
+
+
+@fastapi_app.post("/analyze", response_class=HTMLResponse)
+async def analyze(message: str = Form(...)) -> str:
+    session_id = str(uuid.uuid4())
+    await _session_service.create_session(
+        app_name="app", user_id="web_user", session_id=session_id
+    )
+    new_message = types.Content(role="user", parts=[types.Part.from_text(text=message)])
+    return await _run_turn(session_id, message, new_message)
+
+
+@fastapi_app.post("/resume", response_class=HTMLResponse)
+async def resume(
+    session_id: str = Form(...),
+    answer: str = Form(""),
+    skip_remaining: str = Form(None),
+) -> str:
+    pending = _pending.get(session_id)
+    if pending is None:
+        return _PAGE_HEAD + "<p>No pending question for this session.</p>" + _FORM.format(prefill="") + _FOOT
+
+    response_content = types.Content(
+        role="user",
+        parts=[
+            types.Part(
+                function_response=types.FunctionResponse(
+                    id=pending["interrupt_id"],
+                    name=_REQUEST_INPUT_FUNCTION_CALL_NAME,
+                    response={"answer": answer, "skip_remaining": bool(skip_remaining)},
+                )
+            )
+        ],
+    )
+    return await _run_turn(session_id, answer, response_content)
+
+
+app = fastapi_app
 
 if __name__ == "__main__":
     import uvicorn
