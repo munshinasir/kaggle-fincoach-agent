@@ -13,8 +13,6 @@ pipeline reconciles against known-correct numbers instead of guessing.
 
 from pathlib import Path
 
-from reportlab.pdfgen import canvas
-
 OUT_DIR = Path(__file__).resolve().parent
 
 GROUND_TRUTH = {
@@ -182,6 +180,12 @@ def generate_dirty_injection_attempt() -> None:
 
 
 if __name__ == "__main__":
+    # Deferred here (rather than at module top) so importing this module for
+    # GROUND_TRUTH alone (e.g. tests/smoke/test_document_upload_smoke.py)
+    # never requires reportlab to be installed. Only actually regenerating
+    # the PDFs does.
+    from reportlab.pdfgen import canvas  # noqa: F401
+
     generate_bank_statement()
     generate_utility_bill_electric()
     generate_utility_bill_water()
