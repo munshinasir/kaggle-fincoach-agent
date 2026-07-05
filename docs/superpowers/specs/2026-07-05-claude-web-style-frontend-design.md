@@ -2,7 +2,7 @@
 
 ## Context
 
-`frontend/main.py` (275 lines) is a functional but minimal local-dev frontend: full-page-reload HTML forms, raw JSON/`<pre>` dumps of each sub-agent's output, and utilitarian styling. The backend pipeline (`app/agent.py`) is unchanged and out of scope here — this is a frontend-only redesign covering presentation and interaction, not agent behavior. The one exception: today the frontend renders every sub-agent's event text as it streams past (including the critic's own commentary and intermediate refiner passes); this redesign stops doing that and instead reads the four final documents (`budget_analysis`, `savings_strategy`, `debt_reduction`, `overall_picture`) directly from session state once the `critique_refine_loop` finishes, showing only the critic-approved (or best-available, see Edge Cases) picture.
+`frontend/main.py` (275 lines) is a functional but minimal local-dev frontend: full-page-reload HTML forms, raw JSON/`<pre>` dumps of each sub-agent's output, and utilitarian styling. The backend pipeline (`app/agent.py`) is unchanged and out of scope here — this is a frontend-only redesign covering presentation and interaction, not agent behavior. The one exception: today the frontend renders every sub-agent's event text as it streams past (including the critic's own commentary and intermediate refiner passes); this redesign stops doing that and instead reads **the final bundle** once `critique_refine_loop` finishes — a single, complete picture, not four separate outputs to fetch and stitch together. See "Output Rendering" for exactly what that bundle is and where it comes from.
 
 Goal: make the local dev UI look and feel like Claude.ai's web app — same layout rhythm, calm typography, textbox placement — while presenting the analysis as readable prose instead of JSON.
 
@@ -12,7 +12,7 @@ Goal: make the local dev UI look and feel like Claude.ai's web app — same layo
 One HTML shell loads once. JS calls `/api/analyze`, `/api/resume`, `/api/resume-security` (JSON in, JSON out) and appends turns to a scrolling chat transcript — no page reload per turn. This mirrors the Kaggle course's own reference frontend (`Day5/expense-agent/submission_frontend/main.py`), which uses the identical pattern: FastAPI + hand-rolled HTML/CSS + vanilla JS `fetch()`, no React/Streamlit/Mesop. No new frontend framework or build step.
 
 **2. Prose rendering: deterministic Python template, not an LLM "presenter" agent.**
-A new pure module, `frontend/presenter.py`, walks the four already-critic-approved dicts and builds HTML directly (f-strings, no LLM call). This guarantees tone never drifts and numbers can never be mis-restated — the same reasoning that keeps `security_checkpoint`'s PII/injection filtering in deterministic regex rather than LLM instructions (see `app/agent.py`'s `scrub_pii`/`strip_injection_phrases`). Free, instant, and testable with plain `pytest`, matching this project's existing convention (pure functions → `tests/unit/`, LLM-dependent → `tests/smoke/`).
+A new pure module, `frontend/presenter.py`, walks the final bundle (see "Output Rendering") and builds HTML directly (f-strings, no LLM call). This guarantees tone never drifts and numbers can never be mis-restated — the same reasoning that keeps `security_checkpoint`'s PII/injection filtering in deterministic regex rather than LLM instructions (see `app/agent.py`'s `scrub_pii`/`strip_injection_phrases`). Free, instant, and testable with plain `pytest`, matching this project's existing convention (pure functions → `tests/unit/`, LLM-dependent → `tests/smoke/`).
 
 ## Visual Design
 
@@ -43,25 +43,31 @@ Submitting an intake reply or a security choice appends a new user turn and cont
 
 ## Output Rendering
 
-Once `critique_refine_loop` completes (whether by `critic_verdict.approved == true` or by hitting `MAX_CRITIQUE_ROUNDS`), the backend reads `budget_analysis`, `savings_strategy`, `debt_reduction`, and `overall_picture` straight from session state and passes them to `frontend/presenter.py`, which renders two HTML sections. No JSON, no critic commentary, no intermediate refiner passes are ever shown.
+**What "the final bundle" is.** Once `critique_refine_loop` completes (whether by `critic_verdict.approved == true` or by hitting `MAX_CRITIQUE_ROUNDS`), there is exactly one final bundle, sourced one of two ways:
+- If at least one refine pass ran, it's `state['refined_bundle']` — `RefinerAgent`'s last output, which already nests `budget_analysis`, `savings_strategy`, `debt_reduction`, and `overall_picture` as one object (this is "either refiner's last output — approved or maxed out" from the requirement).
+- If the critic approved on the very first pass, `refiner_agent` never ran and there is no `refined_bundle` key — but `state['budget_analysis']`, `state['savings_strategy']`, `state['debt_reduction']`, and `state['overall_picture']` together are already identical in shape and content to what a `RefinedBundle` would hold, untouched. This is "the overall picture with all the suggestions" from the requirement.
 
-**"Your Financial Picture"** (confirmation/analysis) — from `budget_analysis` + `overall_picture.wins`:
+Either way, the backend assembles one bundle-shaped dict and hands it to `frontend/presenter.py` as a single unit — not four independent lookups to reconcile. No JSON, no critic commentary, no intermediate refiner passes are ever shown.
+
+**Wins cascade.** `budget_analysis.acknowledgments` already flows forward into `overall_picture.wins` (per `skills/overall-picture/SKILL.md` step 2) and survives any refine pass untouched unless the critic specifically flags a tone problem (per `skills/refiner/SKILL.md` step 4 — untouched fields are copied through verbatim). No backend change is needed for this; it's already guaranteed by the existing skills. `presenter.py` reflects that by reading congratulatory content **only** from the final bundle's `overall_picture.wins` — never re-deriving or duplicating it from `budget_analysis.acknowledgments` directly — so there's exactly one path by which a "well done" reaches the user.
+
+**"Your Financial Picture"** (confirmation/analysis) — from the final bundle's `budget_analysis` + `overall_picture.wins`:
 - Opening line stating income, total expenses, surplus, and savings rate in prose, with bolded numbers.
 - Spending breakdown as a bullet list: **Category** — $amount (*percentage*% of expenses).
 - The existing `spending_analysis` descriptive observations, one per line.
-- A short "Where you're doing well" list sourced from `wins`.
+- A short "Where you're doing well" list sourced from `overall_picture.wins`.
 
-**"Recommendations"** — from `savings_strategy` + `debt_reduction` + `overall_picture.next_steps`:
+**"Recommendations"** — from the final bundle's `savings_strategy` + `debt_reduction` + `overall_picture.next_steps`:
 - Lead with `next_steps`, priority-ordered, as the main numbered action list (bolded amounts).
 - *Savings & emergency fund* subsection: emergency fund target vs. current amount/status, then any remaining `savings_strategy.recommendations` not already reflected in `next_steps`, each with its rationale.
 - *Debt payoff plan* subsection: each debt (name, balance, rate), then avalanche vs. snowball stated as prose with bolded months/interest figures, then `debt_reduction.recommendations`' descriptions/impacts as bullets — this is where the emergency-fund-parallel transparency note (added in the most recent Critic/`debt-reduction` fix) will surface to the user.
 - Automation techniques, if present, as a short bullet list under savings.
 
-Tone: calm, matter-of-fact, no exclamation points, no added enthusiasm beyond what the pipeline's own `acknowledgments`/`wins` already state — `presenter.py` only ever restates values that are already in the approved bundle, never invents framing.
+Tone: calm, matter-of-fact, no exclamation points, no added enthusiasm beyond what the pipeline's own `wins` already state — `presenter.py` only ever restates values that are already in the final bundle, never invents framing.
 
 ## Edge Case: Critic Never Approves Within the Round Cap
 
-If `critic_verdict.approved` is still `false` after `MAX_CRITIQUE_ROUNDS` (3) iterations (not observed in testing so far, but possible), show the last available bundle anyway through the same two-section rendering, prefaced with one calm line: *"This reflects the most recent draft; it didn't complete a final consistency check."* Withholding output entirely for a real, completed analysis run is worse UX than a rare, honestly-labeled caveat.
+If `critic_verdict.approved` is still `false` after `MAX_CRITIQUE_ROUNDS` (3) iterations (not observed in testing so far, but possible), show the final bundle anyway — refiner's last output, per the definition above — through the same two-section rendering, prefaced with one calm line: *"This reflects the most recent draft; it didn't complete a final consistency check."* Withholding output entirely for a real, completed analysis run is worse UX than a rare, honestly-labeled caveat.
 
 ## API Contract
 
@@ -81,14 +87,14 @@ A `"final"` response ends that conversation. Sending another message afterward s
 ## File Structure
 
 - `frontend/main.py` — FastAPI app: the three `/api/*` routes plus static file serving. Thin glue only — session/runner plumbing and calls into `presenter.py`.
-- `frontend/presenter.py` — new. Pure, deterministic functions rendering the two HTML sections from the four state dicts. No LLM call, no I/O.
+- `frontend/presenter.py` — new. Pure, deterministic functions rendering the two HTML sections from the one final bundle. No LLM call, no I/O.
 - `frontend/static/index.html` — the page shell: empty-state markup, transcript container, input box markup. Plain static file, no template engine dependency.
 - `frontend/static/style.css` — all styling.
 - `frontend/static/app.js` — session-id tracking, `fetch()` calls, DOM rendering of transcript turns, file-chip and example-chip handling.
 
 ## Testing
 
-- `tests/unit/test_presenter.py` (new, pytest) — feeds representative fixed dicts for all four documents (reusing shapes already established in `tests/smoke/test_critic_savings_debt_overlap_smoke.py`) and asserts: bolded numbers appear (`<strong>` around expected values), category names appear, both section headers appear, and no raw `{`/`}` JSON leaks into the output.
+- `tests/unit/test_presenter.py` (new, pytest) — feeds a representative final bundle (reusing the shape already established in `tests/smoke/test_critic_savings_debt_overlap_smoke.py`), covering both the `refined_bundle` shape and the never-refined (separate-keys) shape, and asserts: bolded numbers appear (`<strong>` around expected values), category names appear, both section headers appear, wins surface only from `overall_picture.wins`, and no raw `{`/`}` JSON leaks into the output.
 - Manual verification in a browser (per this project's UI-change convention): golden path (typed input, no documents), file-upload path, an intake-question round, a security-check trigger, and the max-critique-round fallback if it can be forced — before calling the work done.
 
 ## Scope Boundaries
