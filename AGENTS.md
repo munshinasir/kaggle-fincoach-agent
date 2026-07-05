@@ -10,13 +10,26 @@ success criteria). Summary:
 
 ```
 FinanceCoachWorkflow (Workflow, resumability_config=ResumabilityConfig(is_resumable=True))
- ├─ START → TransactionFetcherAgent  (tools=[McpToolset(...)], plain text output — a single-
- │                            responsibility choice, not a technical requirement: output_schema
- │                            and tool-calling can coexist in the installed google-adk 2.3.0)
+ ├─ START → TransactionFetcherAgent  (tools=[McpToolset(...)], skill: `transaction-fetcher` —
+ │                            normalizes typed input, MCP-fetched transactions, OR one or more
+ │                            uploaded PDF statement documents (bank, utility, mortgage, credit
+ │                            card — read natively via Gemini's multimodal input, no OCR library)
+ │                            into one compact JSON financial picture. No longer a "trivial"
+ │                            passthrough now that it must reconcile multiple documents without
+ │                            double-counting a payment shown on both a bank statement and that
+ │                            debt's own statement.)
  │                            → state['raw_transactions'] (includes a `notes` field for any
  │                              free-text context — surplus destination, existing emergency fund/
  │                              investment accounts — that doesn't fit income/expenses/debts;
  │                              never dropped, never folded into `expenses`)
+ ├─ → security_checkpoint   (@node(rerun_on_resume=True) — deterministic, no LLM). Always
+ │                            scrubs PII (SSN, credit card, labeled bank account numbers) and
+ │                            strips known prompt-injection phrases from TransactionFetcherAgent's
+ │                            output before anything downstream sees it. Routes "clean" straight
+ │                            to intake_loop with no visible interruption; routes to a RequestInput
+ │                            interrupt only when injection was found, asking the user to proceed
+ │                            (continue with the cleaned text) or stop (routes to halted_node,
+ │                            which ends the run — analysis_pipeline never executes).
  ├─ → intake_loop            (@node(rerun_on_resume=True), async generator; bounded to
  │                            MAX_INTAKE_ROUNDS=2). Calls IntakeAgent (output_schema=
  │                            IntakeAssessment) via ctx.run_node() each round; if it flags
@@ -117,10 +130,10 @@ the three deterministic Phase 1 metrics, feeding the resulting session events in
 - No persistent storage of income/debt/personal data — in-memory session only for MVP.
 
 **Skills**: each analysis agent's instruction lives in `skills/<name>/SKILL.md`, not inline —
-`intake-clarification`, `budget-analysis`, `savings-strategy`, `debt-reduction`, `overall-picture`,
-`critic`, `refiner`. `TransactionFetcherAgent`'s instruction is trivial (call the tool, pass through
-the result) and stays inline. `EscalationChecker`/`BundleUnpacker` are plain Python `BaseAgent`
-subclasses with no LLM and no skill — their logic is the whole implementation.
+`transaction-fetcher`, `intake-clarification`, `budget-analysis`, `savings-strategy`,
+`debt-reduction`, `overall-picture`, `critic`, `refiner`. `EscalationChecker`/`BundleUnpacker`/
+`security_checkpoint`/`halted_node` are plain Python (no LLM, no skill) — deterministic checks and
+routing don't need a model; their logic is the whole implementation.
 
 **Ownership chain** (the core architectural rule extended through Phase 1 — see `next_steps.md` for
 the full v2 requirements this implements): `budget-analysis` only describes, never prescribes;
