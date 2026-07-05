@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 
 load_dotenv()  # must run before importing app.agent, which builds Gemini clients
 
-from fastapi import FastAPI, Form  # noqa: E402
+from fastapi import FastAPI, File, Form, UploadFile  # noqa: E402
 from fastapi.responses import HTMLResponse  # noqa: E402
 from google.adk.runners import Runner  # noqa: E402
 from google.adk.sessions import InMemorySessionService  # noqa: E402
@@ -50,6 +50,7 @@ _PAGE_HEAD = """<!DOCTYPE html>
   .agent-block h2 { margin-top: 0; font-size: 1.05rem; }
   pre { white-space: pre-wrap; word-break: break-word; background: #f6f6f6; padding: 12px; border-radius: 6px; }
   .question-block { border: 1px solid #f0c040; background: #fffbea; border-radius: 8px; padding: 16px; margin: 16px 0; }
+  .security-block { border: 1px solid #d9534f; background: #fdf2f2; border-radius: 8px; padding: 16px; margin: 16px 0; }
   label { display: block; margin-top: 10px; }
 </style>
 </head>
@@ -58,8 +59,9 @@ _PAGE_HEAD = """<!DOCTYPE html>
 <p>Describe your income, expenses (or ask to fetch transactions), and any debts.</p>
 """
 
-_FORM = """<form method="post" action="/analyze">
+_FORM = """<form method="post" action="/analyze" enctype="multipart/form-data">
   <textarea name="message" placeholder="e.g. My monthly income is 5000, I have 2 dependants...">{prefill}</textarea><br>
+  <label>Or upload statement documents (PDF): <input type="file" name="documents" accept="application/pdf" multiple></label><br>
   <button type="submit">Analyze</button>
 </form>
 """
@@ -76,18 +78,35 @@ _QUESTION_FORM = """<div class="question-block">
 </div>
 """
 
+_SECURITY_FORM = """<div class="security-block">
+  <h2>⚠ Security check</h2>
+  <p>{message}</p>
+  <form method="post" action="/resume-security">
+    <input type="hidden" name="session_id" value="{session_id}">
+    <button type="submit" name="proceed" value="1">Continue with cleaned version</button>
+    <button type="submit" name="proceed" value="0">Stop here</button>
+  </form>
+</div>
+"""
+
 _FOOT = "</body></html>"
 
 
 def _find_pending_question(events: list) -> dict | None:
-    """Returns {"interrupt_id", "message"} if the run paused on a clarifying question, else None."""
+    """Returns {"interrupt_id", "message", "kind"} if the run paused, else None.
+
+    "kind" is "security" for the security_checkpoint's interrupt_id
+    ("security_confirm") and "intake" for anything else (intake_loop's
+    "intake_round_N" interrupt_ids) — see app/agent.py for both.
+    """
     for event in reversed(events):
         if not event.content or not event.content.parts:
             continue
         for part in event.content.parts:
             fc = part.function_call
             if fc and fc.name == _REQUEST_INPUT_FUNCTION_CALL_NAME:
-                return {"interrupt_id": fc.id, "message": (fc.args or {}).get("message", "")}
+                kind = "security" if fc.id == "security_confirm" else "intake"
+                return {"interrupt_id": fc.id, "message": (fc.args or {}).get("message", ""), "kind": kind}
     return None
 
 
@@ -133,6 +152,12 @@ async def _run_turn(session_id: str, message_for_display: str, new_message: type
     pending = _find_pending_question(events)
     if pending is not None:
         _pending[session_id] = pending
+        if pending["kind"] == "security":
+            return (
+                _PAGE_HEAD
+                + _SECURITY_FORM.format(message=html.escape(pending["message"]), session_id=session_id)
+                + _FOOT
+            )
         return (
             _PAGE_HEAD
             + _QUESTION_FORM.format(
@@ -152,13 +177,28 @@ async def index() -> str:
 
 
 @fastapi_app.post("/analyze", response_class=HTMLResponse)
-async def analyze(message: str = Form(...)) -> str:
+async def analyze(
+    message: str = Form(""),
+    documents: list[UploadFile] = File(default=[]),
+) -> str:
     session_id = str(uuid.uuid4())
     await _session_service.create_session(
         app_name="app", user_id="web_user", session_id=session_id
     )
-    new_message = types.Content(role="user", parts=[types.Part.from_text(text=message)])
-    return await _run_turn(session_id, message, new_message)
+    parts = []
+    for doc in documents:
+        if not doc.filename:
+            continue
+        data = await doc.read()
+        if data:
+            parts.append(types.Part.from_bytes(data=data, mime_type="application/pdf"))
+    if message.strip():
+        parts.append(types.Part.from_text(text=message))
+    if not parts:
+        parts.append(types.Part.from_text(text=""))
+    new_message = types.Content(role="user", parts=parts)
+    display_message = message if message.strip() else f"[{len(documents)} document(s) uploaded]"
+    return await _run_turn(session_id, display_message, new_message)
 
 
 @fastapi_app.post("/resume", response_class=HTMLResponse)
@@ -184,6 +224,30 @@ async def resume(
         ],
     )
     return await _run_turn(session_id, answer, response_content)
+
+
+@fastapi_app.post("/resume-security", response_class=HTMLResponse)
+async def resume_security(
+    session_id: str = Form(...),
+    proceed: str = Form(...),
+) -> str:
+    pending = _pending.get(session_id)
+    if pending is None:
+        return _PAGE_HEAD + "<p>No pending question for this session.</p>" + _FORM.format(prefill="") + _FOOT
+
+    response_content = types.Content(
+        role="user",
+        parts=[
+            types.Part(
+                function_response=types.FunctionResponse(
+                    id=pending["interrupt_id"],
+                    name=_REQUEST_INPUT_FUNCTION_CALL_NAME,
+                    response={"proceed": proceed == "1"},
+                )
+            )
+        ],
+    )
+    return await _run_turn(session_id, "[security check response]", response_content)
 
 
 app = fastapi_app
