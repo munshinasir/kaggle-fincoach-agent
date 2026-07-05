@@ -328,6 +328,13 @@ class EnrichedIntake(BaseModel):
     )
 
 
+class SecurityConfirmation(BaseModel):
+    proceed: bool = Field(
+        False,
+        description="True to continue with the already-scrubbed text; False to stop without running analysis",
+    )
+
+
 class CriticIssue(BaseModel):
     document: str = Field(
         ..., description="Which output has the problem: 'budget_analysis', 'savings_strategy', 'debt_reduction', or 'overall_picture'"
@@ -587,12 +594,62 @@ async def intake_loop(ctx: Context, node_input: str) -> AsyncGenerator[Event, No
     yield Event(output=enriched, state={"enriched_intake": enriched})
 
 
+def halted_node(node_input: str) -> str:
+    """Terminal node for the 'halted' route — the run ends here, analysis_pipeline never runs."""
+    return node_input
+
+
+@node(rerun_on_resume=True)
+async def security_checkpoint(ctx: Context, node_input: str) -> AsyncGenerator[Event, None]:
+    """Scrubs PII and neutralizes prompt-injection attempts before intake_loop ever runs.
+
+    PII scrubbing and injection-phrase removal are unconditional — they
+    happen before any HITL interrupt, so the payload is neutralized
+    whether or not the user later confirms. The interrupt exists purely
+    for transparency and an explicit stop option, not to gate the
+    scrubbing itself.
+    """
+    interrupt_id = "security_confirm"
+    if interrupt_id in ctx.resume_inputs:
+        answer = ctx.resume_inputs[interrupt_id]
+        scrubbed_text = ctx.state.get("security_scrubbed_text", "")
+        if answer.get("proceed"):
+            yield Event(output=scrubbed_text, route="clean")
+        else:
+            yield Event(
+                output="Stopped at your request after a security check.",
+                route="halted",
+            )
+        return
+
+    scrubbed, redacted_types = scrub_pii(node_input)
+    scrubbed, flagged_phrases = strip_injection_phrases(scrubbed)
+
+    if not flagged_phrases:
+        yield Event(output=scrubbed, route="clean", state={"security_redacted_types": redacted_types})
+        return
+
+    message = (
+        "Before I continue: I removed something from your input that looked like an "
+        "attempt to override these agents' instructions"
+        + (f", and redacted {', '.join(redacted_types)}" if redacted_types else "")
+        + ". Continue with the cleaned version, or stop here?"
+    )
+    yield Event(state={"security_scrubbed_text": scrubbed, "security_redacted_types": redacted_types})
+    yield RequestInput(
+        interrupt_id=interrupt_id,
+        message=message,
+        response_schema=SecurityConfirmation,
+    )
+
+
 root_agent = Workflow(
     name="FinanceCoachWorkflow",
-    description="Coordinates transaction intake, clarification, and the budget/savings/debt analysis pipeline.",
+    description="Coordinates transaction intake, security screening, clarification, and the budget/savings/debt analysis pipeline.",
     edges=[
         (START, transaction_fetcher_agent),
-        (transaction_fetcher_agent, intake_loop),
+        (transaction_fetcher_agent, security_checkpoint),
+        (security_checkpoint, {"clean": intake_loop, "halted": halted_node}),
         (intake_loop, analysis_pipeline),
         (analysis_pipeline, critique_refine_loop),
     ],
