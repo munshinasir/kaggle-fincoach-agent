@@ -6,7 +6,7 @@ description: |
   critic_verdict.approved is false and issues are present. Do NOT use it
   to re-derive the analysis from scratch, restyle unflagged content, or
   second-guess a fix critic didn't ask for.
-version: 1.0.0
+version: 1.1.0
 license: MIT
 metadata:
   author: financial-coach-agent
@@ -30,6 +30,7 @@ metadata:
 ## Examples
 - One issue: `{document: "budget_analysis", field_path: "spending_categories[2].percentage", suggested_fix: "Recompute every spending_categories[].percentage as amount/total_expenses*100"}` → recompute every entry's `percentage` in `budget_analysis.spending_categories` (since the fix says "every entry," not just index 2), leave `spending_analysis`, `acknowledgments`, and every other document byte-for-byte identical.
 - One issue: `{document: "debt_reduction", field_path: "recommendations[0]", suggested_fix: "Remove this recommendation; minimum payments are fixed."}` → remove only `recommendations[0]` from `debt_reduction.recommendations`, leave `payoff_plans`, `debts`, and everything else in all four documents unchanged. If `overall_picture.next_steps` merged that same removed recommendation in, drop the corresponding `next_steps` entry too (the knock-on effect) — but leave every other `next_steps` entry as-is.
+- One issue: `{document: "savings_strategy", field_path: "recommendations[1]", suggested_fix: "Remove the 'Aggressive Growth Index Fund' entry from savings_strategy.recommendations; debt_reduction's payoff plan governs this money instead."}` → remove only that one entry from `savings_strategy.recommendations`, leave `emergency_fund`, `automation_techniques`, `debt_context`, and every other document unchanged. If `overall_picture.next_steps` included a step referencing that same investment ("Automated Investment Transfer" or similar), drop that `next_steps` entry too — the knock-on effect — but leave `debt_reduction`'s own recommendation directing that money to debt exactly as-is; debt wins the overlap, nothing about the debt-side recommendation needs to change.
 
 ## Output format
 Structured `RefinedBundle`: `budget_analysis`, `savings_strategy`, `debt_reduction`, `overall_picture` — same shapes as those agents' own outputs, mostly copied forward.
