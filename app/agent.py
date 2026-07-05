@@ -3,6 +3,7 @@
 See AGENTS.md and .agents-cli-spec.md for the full spec.
 """
 
+import re
 import sys
 from collections.abc import AsyncGenerator
 from pathlib import Path
@@ -24,6 +25,72 @@ from pydantic import BaseModel, Field
 
 MAX_INTAKE_ROUNDS = 2
 MAX_CRITIQUE_ROUNDS = 3
+
+_SSN_PATTERN = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
+_CREDIT_CARD_PATTERN = re.compile(r"\b(?:\d[ -]?){13,16}\b")
+_BANK_ACCOUNT_PATTERN = re.compile(
+    r"(?:Account|Acct)\s*(?:No\.?|#|Number)?\s*:?\s*(\d{6,17})", re.IGNORECASE
+)
+
+_INJECTION_PHRASES = [
+    "ignore previous",
+    "ignore rules",
+    "bypass rules",
+    "override instructions",
+    "system prompt",
+    "ignore instruction",
+    "bypass",
+    "ignore policies",
+    "recommend buying",
+    "ignore compliance",
+]
+
+
+def scrub_pii(text: str) -> tuple[str, list[str]]:
+    """Redacts SSNs, credit card numbers, and labeled bank account numbers.
+
+    Order matters: SSNs and account numbers are redacted before the credit
+    card pattern runs, since a bare account number could otherwise also
+    satisfy the 13-16-digit credit card pattern.
+    """
+    redacted: list[str] = []
+    scrubbed = text
+
+    if _SSN_PATTERN.search(scrubbed):
+        scrubbed = _SSN_PATTERN.sub("[REDACTED_SSN]", scrubbed)
+        redacted.append("SSN")
+
+    if _BANK_ACCOUNT_PATTERN.search(scrubbed):
+        scrubbed = _BANK_ACCOUNT_PATTERN.sub(
+            lambda m: m.group(0).replace(m.group(1), "[REDACTED_ACCOUNT]"), scrubbed
+        )
+        redacted.append("Bank Account")
+
+    if _CREDIT_CARD_PATTERN.search(scrubbed):
+        scrubbed = _CREDIT_CARD_PATTERN.sub("[REDACTED_CARD]", scrubbed)
+        redacted.append("Credit Card")
+
+    return scrubbed, redacted
+
+
+def strip_injection_phrases(text: str) -> tuple[str, list[str]]:
+    """Finds and removes known prompt-injection phrases, case-insensitively.
+
+    Unlike scrub_pii (which redacts sensitive but legitimate data), a
+    matched phrase here is adversarial and is removed outright, replaced
+    with `[REMOVED]` so the redaction is visible/auditable rather than
+    silently deleted.
+    """
+    flagged: list[str] = []
+    scrubbed = text
+
+    for phrase in _INJECTION_PHRASES:
+        pattern = re.compile(re.escape(phrase), re.IGNORECASE)
+        if pattern.search(scrubbed):
+            scrubbed = pattern.sub("[REMOVED]", scrubbed)
+            flagged.append(phrase)
+
+    return scrubbed, flagged
 
 SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
 MCP_SERVER_SCRIPT = Path(__file__).resolve().parent / "transactions_mcp_server.py"
