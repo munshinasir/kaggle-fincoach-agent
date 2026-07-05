@@ -5,8 +5,8 @@
 Multi-agent financial coach. See `.agents-cli-spec.md` for the full spec (overview, constraints,
 success criteria). Summary:
 
-**Pipeline** (`app/agent.py`, `Workflow`/`@node` — v2 Phase 2; see `.agents-cli-spec.md` and
-`next_steps.md` for the full v2 roadmap):
+**Pipeline** (`app/agent.py`, `Workflow`/`@node` — v2 Phase 3, feature-complete; see
+`.agents-cli-spec.md` and `next_steps.md` for the full v2 history):
 
 ```
 FinanceCoachWorkflow (Workflow, resumability_config=ResumabilityConfig(is_resumable=True))
@@ -29,44 +29,70 @@ FinanceCoachWorkflow (Workflow, resumability_config=ResumabilityConfig(is_resuma
  │                            analysis_pipeline's SequentialAgent doesn't consume node_input
  │                            directly, so the handoff goes through state, same as every other
  │                            agent below.
- └─ → analysis_pipeline      (SequentialAgent — drops into a Workflow edge unchanged; a plain
-                              BaseAgent auto-wraps as an AgentNode)
-      ├─ BudgetAnalysisAgent      (output_schema=BudgetAnalysis)
-      │                            reads {raw_transactions}, {enriched_intake} + user-provided
-      │                            income/dependants/manual expenses
-      │                            → state['budget_analysis']  (spending_categories,
-      │                              savings_categories, spending_analysis — descriptive only,
-      │                              acknowledgments — positive callouts, savings_rate)
-      ├─ SavingsStrategyAgent     (output_schema=SavingsStrategy)
-      │                            reads {budget_analysis}; owns prescriptive spending-cut +
-      │                            savings-allocation recommendations, intent-branches on
-      │                            savings_rate/emergency fund, analyzes (never prescribes) debt
-      │                            via debt_context handoff
-      │                            → state['savings_strategy']
-      ├─ DebtReductionAgent       (output_schema=DebtReduction)
-      │                            reads {budget_analysis}, {savings_strategy} (incl.
-      │                            debt_context) + user-provided debts; owns all debt
-      │                            prescriptions and the invest-vs-payoff split (vehicle-level
-      │                            investing only, never a specific pick)
-      │                            → state['debt_reduction']
-      └─ OverallPictureAgent      (output_schema=OverallPicture)
-                                   reads {budget_analysis}, {savings_strategy}, {debt_reduction};
-                                   merges into one prioritized, affirming "next steps" list — no
-                                   new analysis
-                                   → state['overall_picture']
+ ├─ → analysis_pipeline      (SequentialAgent — drops into a Workflow edge unchanged; a plain
+ │                            BaseAgent auto-wraps as an AgentNode)
+ │    ├─ BudgetAnalysisAgent      (output_schema=BudgetAnalysis)
+ │    │                            reads {raw_transactions}, {enriched_intake} + user-provided
+ │    │                            income/dependants/manual expenses
+ │    │                            → state['budget_analysis']  (spending_categories,
+ │    │                              savings_categories, spending_analysis — descriptive only,
+ │    │                              acknowledgments — positive callouts, savings_rate)
+ │    ├─ SavingsStrategyAgent     (output_schema=SavingsStrategy)
+ │    │                            reads {budget_analysis}; owns prescriptive spending-cut +
+ │    │                            savings-allocation recommendations (each tagged `type`:
+ │    │                            `"spending_cut"` frees up new money, excluded from the
+ │    │                            reconciliation identity; `"allocation"` spends
+ │    │                            discretionary_surplus, included), intent-branches on
+ │    │                            savings_rate/emergency fund, analyzes (never prescribes) debt
+ │    │                            via debt_context handoff
+ │    │                            → state['savings_strategy']
+ │    ├─ DebtReductionAgent       (output_schema=DebtReduction)
+ │    │                            reads {budget_analysis}, {savings_strategy} (incl.
+ │    │                            debt_context) + user-provided debts; owns all debt
+ │    │                            prescriptions and the invest-vs-payoff split (vehicle-level
+ │    │                            investing only, never a specific pick)
+ │    │                            → state['debt_reduction']
+ │    └─ OverallPictureAgent      (output_schema=OverallPicture)
+ │                                 reads {budget_analysis}, {savings_strategy}, {debt_reduction};
+ │                                 merges into one prioritized, affirming "next steps" list — no
+ │                                 new analysis
+ │                                 → state['overall_picture']
+ └─ → critique_refine_loop   (LoopAgent, max_iterations=MAX_CRITIQUE_ROUNDS=3 — a plain
+                              BaseAgent, drops into a Workflow edge unchanged)
+      ├─ CriticAgent              (output_schema=CriticVerdict) — independently re-derives every
+      │                            percentage/reconciliation number rather than trusting upstream's
+      │                            stated values; checks realism ceilings, debt-minimum-payment
+      │                            safety, and tone across all four documents
+      │                            → state['critic_verdict'] {approved, issues[]}
+      ├─ EscalationChecker        (plain `BaseAgent`, no LLM) — reads state['critic_verdict'];
+      │                            yields `Event(actions=EventActions(escalate=True))` when
+      │                            approved, which stops the LoopAgent immediately (skips
+      │                            RefinerAgent/BundleUnpacker that iteration) — verified against
+      │                            installed `agents/loop_agent.py` source: LoopAgent checks
+      │                            `event.actions.escalate` after every sub-agent event
+      ├─ RefinerAgent             (output_schema=RefinedBundle; only runs when not approved) —
+      │                            applies each CriticIssue's suggested_fix precisely; every
+      │                            untouched field must be copied forward verbatim (narrow patch,
+      │                            not a rewrite) → state['refined_bundle']
+      └─ BundleUnpacker           (plain `BaseAgent`, no LLM) — redistributes refined_bundle's
+                                   four documents back into state['budget_analysis'] etc. via
+                                   `actions.state_delta`, since `output_key` only ever writes one
+                                   key and CriticAgent's next-iteration re-check reads the four
+                                   individual keys
 ```
 
 This project pins `google-adk>=2.0.0,<3.0.0` (installed: 2.3.0). It uses `Agent`/`SequentialAgent`/
-`Workflow` from `google.adk.agents`/`google.adk.workflow` with `output_schema`/`output_key` for
-structured, state-passing output, served via the generated `app/fast_api_app.py` + `app_utils/`
-(do not hand-edit those). Verify any ADK API usage against the installed `google-adk` package or
-`/google-agents-cli-adk-code` — never assume an API shape from memory; the Workflow/HITL wiring here
-(the exact resume-message shape, `ctx.resume_inputs` population, `response_schema` validation) was
-verified by reading the installed source directly (`workflow/utils/_workflow_hitl_utils.py`,
-`workflow/utils/_rehydration_utils.py`), not from docs alone. Note: `SequentialAgent` is
-`@deprecated` in 2.3.0 ("use Workflow instead") but still functional — `analysis_pipeline` keeps it
-since a plain sequential chain doesn't need graph features; only the intake stage, which needs a
-conditional/looping HITL interrupt, uses `Workflow`/`@node` directly.
+`LoopAgent`/`BaseAgent`/`Workflow` with `output_schema`/`output_key` for structured, state-passing
+output, served via the generated `app/fast_api_app.py` + `app_utils/` (do not hand-edit those).
+Verify any ADK API usage against the installed `google-adk` package or `/google-agents-cli-adk-code`
+— never assume an API shape from memory; the Workflow/HITL wiring here (the exact resume-message
+shape, `ctx.resume_inputs` population, `response_schema` validation) and the LoopAgent
+escalate/EscalationChecker pattern were both verified by reading the installed source directly
+(`workflow/utils/_workflow_hitl_utils.py`, `workflow/utils/_rehydration_utils.py`,
+`agents/loop_agent.py`), not from docs alone. Note: `SequentialAgent`/`LoopAgent` are `@deprecated`
+in 2.3.0 ("use Workflow instead") but still functional — `analysis_pipeline` and
+`critique_refine_loop` keep them since neither needs graph-level conditional routing; only the
+intake stage, which needs a conditional/looping HITL interrupt, uses `Workflow`/`@node` directly.
 
 **Known eval-tooling gap**: `agents-cli eval generate` (via the Vertex eval SDK's
 `client.evals.run_inference`) does not yet support a `Workflow`-typed root agent — it crashes with
@@ -91,15 +117,18 @@ the three deterministic Phase 1 metrics, feeding the resulting session events in
 - No persistent storage of income/debt/personal data — in-memory session only for MVP.
 
 **Skills**: each analysis agent's instruction lives in `skills/<name>/SKILL.md`, not inline —
-`intake-clarification`, `budget-analysis`, `savings-strategy`, `debt-reduction`, `overall-picture`.
-`TransactionFetcherAgent`'s instruction is trivial (call the tool, pass through the result) and
-stays inline.
+`intake-clarification`, `budget-analysis`, `savings-strategy`, `debt-reduction`, `overall-picture`,
+`critic`, `refiner`. `TransactionFetcherAgent`'s instruction is trivial (call the tool, pass through
+the result) and stays inline. `EscalationChecker`/`BundleUnpacker` are plain Python `BaseAgent`
+subclasses with no LLM and no skill — their logic is the whole implementation.
 
 **Ownership chain** (the core architectural rule extended through Phase 1 — see `next_steps.md` for
 the full v2 requirements this implements): `budget-analysis` only describes, never prescribes;
 `savings-strategy` prescribes spending/savings actions but only *analyzes* debt (via `debt_context`);
 `debt-reduction` owns every debt and invest-vs-payoff prescription; `overall-picture` merges, never
-adds new analysis. If you're tempted to add a recommendation to the "wrong" agent, it belongs
+adds new analysis; `critic` only flags problems, never fixes or adds recommendations; `refiner` only
+applies exactly what `critic` flagged, never re-derives or restyles anything else. If you're tempted
+to add a recommendation to the "wrong" agent, it belongs
 downstream instead.
 
 ---

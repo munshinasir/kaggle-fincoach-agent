@@ -1,36 +1,40 @@
 # Next Steps
 
-## Resume here (session paused after Phase 2, 2026-07-05)
+## Resume here (v2 feature-complete through Phase 3, 2026-07-05)
 
-- **Git**: Phase 2 changes complete and smoke-tested, about to be committed. History so far:
-  `b73f2ae` (v1 checkpoint) → `076c2af` (v2 Phase 1) → `18076cb` (threshold tweak) → Phase 2 commit
-  (this session). No remote configured yet (local-only, by design).
+- **Git**: Phase 3 changes complete and smoke-tested, about to be committed. History so far:
+  `b73f2ae` (v1 checkpoint) → `076c2af` (v2 Phase 1) → `18076cb` (threshold tweak) → `552252e`
+  (v2 Phase 2) → Phase 3 commit (this session). No remote configured yet (local-only, by design).
 - **Task tracker**: #7 Step 0 git checkpoint (done), #8 Phase 1 (done), #9 Phase 2 (done), #10
-  Phase 3 (pending, not started — this is the next action).
-- **Next action**: start Phase 3 (Critic + Refine loop) — see design below. Nothing is mid-edit;
-  the codebase is in a clean, working state to branch from.
+  Phase 3 (done).
+- **Next action**: none queued — the originally-planned v2 phases (1/2/3) are all done. See
+  "After Phase 3" at the bottom for the only remaining planned work (threat model + deployment),
+  which requires explicit human approval to actually deploy. Otherwise, this is a natural pause
+  point — nothing is mid-edit.
 - **No servers/processes left running** — frontend and any ad hoc smoke-test scripts were stopped
   before pausing.
 
 ---
 
-## What's built and working (v1 + v2 Phase 1 + v2 Phase 2)
+## What's built and working (v1 + v2 Phases 1–3)
 
-`app/agent.py` is now a `Workflow` (`FinanceCoachWorkflow`, `resumability_config=ResumabilityConfig(is_resumable=True)`):
-`START → TransactionFetcherAgent → intake_loop → analysis_pipeline` where `analysis_pipeline` is
-the same `SequentialAgent` as before (`BudgetAnalysisAgent → SavingsStrategyAgent →
-DebtReductionAgent → OverallPictureAgent`), now used as a `Workflow` node. `intake_loop` is a
-bounded (2-round) clarification loop that runs before analysis — see the Phase 2 section below for
-what it does and how it was verified. Each analysis agent's instruction lives in
-`skills/<name>/SKILL.md` (single source of truth, loaded at runtime via `_load_skill_instruction()`).
-Local FastAPI frontend at `frontend/main.py` (`uv run uvicorn frontend.main:app --port 8080`) now
-persists `session_id` per browser session and handles the intake loop's pause/resume via a
-`function_response` form post — see Phase 2 section for the exact wire format. Full ownership-chain
+`app/agent.py` is a `Workflow` (`FinanceCoachWorkflow`, `resumability_config=ResumabilityConfig(is_resumable=True)`):
+`START → TransactionFetcherAgent → intake_loop → analysis_pipeline → critique_refine_loop`.
+`analysis_pipeline` is a `SequentialAgent` (`BudgetAnalysisAgent → SavingsStrategyAgent →
+DebtReductionAgent → OverallPictureAgent`) used as a `Workflow` node. `intake_loop` is a bounded
+(2-round) clarification loop that runs before analysis (see the Phase 2 section). `critique_refine_loop`
+is a `LoopAgent` (`max_iterations=3`) that independently re-checks the whole bundle and fixes what
+it finds before anything is shown to the user (see the Phase 3 section). Each analysis agent's
+instruction lives in `skills/<name>/SKILL.md` (single source of truth, loaded at runtime via
+`_load_skill_instruction()`). Local FastAPI frontend at `frontend/main.py`
+(`uv run uvicorn frontend.main:app --port 8080`) persists `session_id` per browser session and
+handles the intake loop's pause/resume via a `function_response` form post. Full ownership-chain
 rule (repeat this before touching any skill): **`budget-analysis` only describes, never prescribes;
 `savings-strategy` prescribes spending/savings actions but only *analyzes* debt (via
 `debt_context`); `debt-reduction` owns every debt and invest-vs-payoff prescription;
-`overall-picture` merges, never adds new analysis.** `intake-clarification` only decides whether to
-ask a clarifying question — never analyzes.
+`overall-picture` merges, never adds new analysis; `critic` only flags problems, never fixes;
+`refiner` only applies exactly what `critic` flagged.** `intake-clarification` only decides whether
+to ask a clarifying question — never analyzes.
 
 ## Resolved decisions
 
@@ -42,16 +46,15 @@ ask a clarifying question — never analyzes.
   **8%** (raised from an initial 6%, which never triggered any investing against the worked
   example). Revisit only if real usage shows 8% still never triggers investing.
 
-## Eval backlog (not blocking, revisit during Phase 2/3)
+## Eval backlog (not blocking)
 
-- **Cut-vs-allocation reconciliation nuance**: `savings_reconciliation_valid` checks
-  `sum(recommendations[].amount) + debt minimums + available_surplus_after_savings == total_surplus`.
-  Holds for the current formal eval case (no spending cuts triggered there). Does **not** yet
-  correctly handle a case where `recommendations` includes a spending-cut entry — a cut is additive
-  to the allocatable pool, not consumptive from it, and `SavingsRecommendation` doesn't distinguish
-  cut-type from allocation-type. Confirmed by hand against the worked example, which does trigger
-  cuts. Fix with either a `type: "spending_cut" | "allocation"` field or a smarter metric — decide
-  during Phase 3, since the Critic needs the same reconciliation logic anyway.
+- **Cut-vs-allocation reconciliation nuance — FIXED in Phase 3**: added
+  `SavingsRecommendation.type` (`"spending_cut"` or `"allocation"`). `spending_cut` entries free up
+  *new* money not yet reflected in `total_surplus`, so they're excluded from the reconciliation
+  identity; only `allocation` entries count. Updated `skills/savings-strategy/SKILL.md` (steps 5/6/11),
+  `tests/eval/savings_reconciliation_metric.py`, and `skills/critic/SKILL.md` (rule 1) to match —
+  all three now agree on the same identity. Verified against a live scenario that actually triggers
+  a spending cut.
 - **Surplus / `savings_categories` case**: not yet eval-covered — (1) `savings_categories` sums to
   100% of `total_surplus`, (2) no surplus/spare-change entry ever appears in `spending_categories`,
   (3) a deficit scenario (expenses ≥ income) produces an empty `savings_categories`, not negative.
@@ -184,29 +187,85 @@ categories/amounts).
 
 ---
 
-## Phase 3 — Critic + Refine loop
+## Phase 3 — Critic + Refine loop — DONE
 
-Wraps `OverallPictureAgent`'s output in `LoopAgent(sub_agents=[CriticAgent, RefinerAgent],
-max_iterations=3)`, escalating once the critic passes. Positioned after Phase 2 so its realism
-checks run against real elicited data, not Phase 1's placeholder assumptions.
+**Verified ADK fact** (installed `google-adk==2.3.0`, checked against `agents/loop_agent.py` source
+directly): `LoopAgent` runs its `sub_agents` in order, once per iteration up to `max_iterations`,
+and checks `event.actions.escalate` after *every* event any sub-agent yields — the instant it sees
+`escalate=True`, it stops running further sub_agents that same iteration and exits the whole loop.
+This is what makes the `EscalationChecker` pattern work: a small deterministic `BaseAgent` (no LLM)
+placed right after `CriticAgent` reads `state['critic_verdict']` and yields
+`Event(actions=EventActions(escalate=True))` when approved — cheap, reliable, and avoids relying on
+an LLM to correctly call an `exit_loop`-style tool.
 
-**`CriticAgent`** checks, concretely: (a) category percentages still sum to 100% across
-budget/savings math (and the reconciliation-with-cuts logic from the Eval backlog above — build it
-here if not already fixed); (b) no single-category cut recommendation exceeds roughly 30-50%
-reduction *unless* `savings_rate` is near 0% (assumption, confirm/adjust); (c) no recommendation
-reduces or skips a minimum/regular payment on any debt; (d) tone is affirming — `wins` is non-empty
-when the input supports it, next-step framing reads as guidance, not criticism.
+**Shape built** (`app/agent.py`):
+```python
+critique_refine_loop = LoopAgent(
+    name="CritiqueRefineLoop",
+    sub_agents=[critic_agent, escalation_checker, refiner_agent, bundle_unpacker],
+    max_iterations=MAX_CRITIQUE_ROUNDS,  # 3
+)
+```
+Wired into the `Workflow` as `(analysis_pipeline, critique_refine_loop)` — a plain `BaseAgent`
+(`LoopAgent` included) auto-wraps as an `AgentNode` in a `Workflow` edge, same as `analysis_pipeline`
+already did.
 
-**`RefinerAgent`** revises exactly what the critic flagged, informed by its specific complaints —
-narrow fix, not a full re-generation.
+**`CriticAgent`** (`output_schema=CriticVerdict{approved, issues[]}`, skill: `critic`) reads all
+four documents (`budget_analysis`, `savings_strategy`, `debt_reduction`, `overall_picture`) and
+independently re-derives every percentage/reconciliation number rather than trusting what's stated —
+this is the whole point of a second pass, since Phase 1 already found the upstream agents can get
+arithmetic wrong despite being told not to. Checks, concretely: (1) spending/savings category
+percentages actually sum to 100%, and the reconciliation identity (`sum(allocation-type
+recommendations) + debt minimums + available_surplus_after_savings == total_surplus`, with
+`spending_cut`-type entries excluded — see Eval backlog); (2) no cut exceeds ~30–50% of a category
+unless `savings_rate` is near 0%; (3) no recommendation anywhere touches a debt's `min_payment`;
+(4) tone — `wins` non-empty when supported, `next_steps` reads as guidance not criticism. Emits one
+`CriticIssue{document, field_path, problem, suggested_fix}` per violation, with `suggested_fix`
+precise enough that `refiner` doesn't need to re-derive anything.
 
-**Phase 3 verification plan**: at least one eval case that deliberately constructs an input likely
-to trigger an unrealistic first-pass recommendation (e.g. near-zero surplus, forcing an
-aggressive-cut temptation) and asserts the loop catches and moderates it; confirm no regression on
-the Phase 1/2 eval cases.
+**`RefinerAgent`** (`output_schema=RefinedBundle{budget_analysis, savings_strategy, debt_reduction,
+overall_picture}`, skill: `refiner`) only runs when not approved (the `EscalationChecker` already
+stopped the loop otherwise). Applies each `CriticIssue`'s `suggested_fix` precisely; **every field
+not named by an issue must be copied forward verbatim** — enforced by instruction (narrow patch,
+not a rewrite), the same discipline pattern used throughout this project (e.g. savings-strategy's
+merge/dedupe rule) rather than a schema-level constraint, since ADK's `output_schema` requires one
+complete object per turn with no partial-update primitive.
 
-**Files to touch**: `app/agent.py` (`CriticAgent`, `RefinerAgent`, `LoopAgent`), new
-`skills/critic/SKILL.md`.
+**`BundleUnpacker`** (plain `BaseAgent`, no LLM) exists because `output_key` only ever writes ONE
+state key (`refined_bundle`), but `CriticAgent`'s *next* iteration needs the four individual keys
+(`budget_analysis` etc.) to be current for its `{state_var}` instruction interpolation to see the
+fix. It redistributes `state['refined_bundle']`'s four fields back into the four original keys via
+`actions.state_delta`.
+
+**Cut-vs-allocation reconciliation nuance — fixed here** (was in the Eval backlog since Phase 1):
+added `SavingsRecommendation.type` (`"spending_cut"` | `"allocation"`). Updated
+`skills/savings-strategy/SKILL.md` to populate it and to exclude `spending_cut` entries from its own
+step-11 sanity check, `tests/eval/savings_reconciliation_metric.py` to match, and `skills/critic/SKILL.md`
+rule 1 to use the same identity — all three agree now.
+
+**Phase 3 verification — done, not just planned**: (1) a live end-to-end run (worked example, via
+`Runner(app=app, ...)`) where `CriticAgent` approved on the first pass and the loop correctly
+stopped after 1 iteration (no `RefinerAgent`/`BundleUnpacker` call — confirmed by event count and
+absence of their output in the trace); (2) an **isolated** test — seeded a session directly with a
+deliberately broken bundle (spending percentages summing to 103%, plus a `debt_reduction`
+recommendation that reduces a debt's minimum payment) and ran `App(root_agent=critique_refine_loop,
+...)` alone against it. Result: `CriticAgent` caught both injected defects with correct, specific
+`suggested_fix`es; `RefinerAgent` fixed the percentages (50/20/30, summing to 100%), removed the
+offending debt recommendation, and — unprompted, purely from the "propagate knock-on effects" rule
+— also dropped the now-stale `overall_picture.next_steps` entry that referenced the removed
+recommendation, while leaving the OTHER `next_steps` entry and every other field byte-for-byte
+unchanged; the loop then re-ran `CriticAgent`, got `approved=true`, and stopped cleanly at 2
+iterations (well under the `max_iterations=3` cap). (3) Re-ran the three deterministic Phase 1/2
+metrics (`budget_categories_valid`, `savings_debt_boundary_valid`, `savings_reconciliation_valid`)
+against a full run that now includes `critique_refine_loop` — all three still score 1, confirming no
+regression.
+
+**Files touched**: `app/agent.py` (`SavingsRecommendation.type`, `CriticIssue`, `CriticVerdict`,
+`RefinedBundle` schemas; `critic_agent`, `refiner_agent`, `_EscalationChecker`, `_BundleUnpacker`,
+`critique_refine_loop`; new Workflow edge), new `skills/critic/SKILL.md` and
+`skills/refiner/SKILL.md`, `skills/savings-strategy/SKILL.md` (type field + reconciliation identity),
+`tests/eval/savings_reconciliation_metric.py` (identity fix), `AGENTS.md`/`.agents-cli-spec.md`
+(architecture diagram).
 
 ---
 

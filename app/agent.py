@@ -7,10 +7,12 @@ import sys
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
-from google.adk.agents import Agent, SequentialAgent
+from google.adk.agents import Agent, BaseAgent, LoopAgent, SequentialAgent
 from google.adk.agents.context import Context
+from google.adk.agents.invocation_context import InvocationContext
 from google.adk.apps import App, ResumabilityConfig
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.events.request_input import RequestInput
 from google.adk.models import Gemini
 from google.adk.tools.mcp_tool import McpToolset
@@ -21,6 +23,7 @@ from mcp import StdioServerParameters
 from pydantic import BaseModel, Field
 
 MAX_INTAKE_ROUNDS = 2
+MAX_CRITIQUE_ROUNDS = 3
 
 SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
 MCP_SERVER_SCRIPT = Path(__file__).resolve().parent / "transactions_mcp_server.py"
@@ -116,6 +119,16 @@ class SavingsRecommendation(BaseModel):
     )
     amount: float = Field(..., description="Recommended monthly amount — allocated or freed up")
     rationale: str | None = Field(None, description="Explanation for this recommendation")
+    type: str = Field(
+        ...,
+        description=(
+            "'allocation' — spends money already in discretionary_surplus (consumptive; counts "
+            "against the reconciliation identity). 'spending_cut' — frees up NEW money from an "
+            "existing expense category that isn't part of total_surplus/discretionary_surplus yet "
+            "(additive/hypothetical; excluded from the reconciliation identity, since the cut "
+            "hasn't actually happened in the numbers)."
+        ),
+    )
 
 
 class AutomationTechnique(BaseModel):
@@ -248,6 +261,27 @@ class EnrichedIntake(BaseModel):
     )
 
 
+class CriticIssue(BaseModel):
+    document: str = Field(
+        ..., description="Which output has the problem: 'budget_analysis', 'savings_strategy', 'debt_reduction', or 'overall_picture'"
+    )
+    field_path: str = Field(..., description="Where in that document, e.g. 'spending_categories percentages' or 'recommendations[1].amount'")
+    problem: str = Field(..., description="What's wrong, stated concretely")
+    suggested_fix: str = Field(..., description="The specific correction to make — precise enough for RefinerAgent to apply without re-deriving the analysis")
+
+
+class CriticVerdict(BaseModel):
+    approved: bool = Field(..., description="True if nothing below needs fixing — the loop stops here")
+    issues: list[CriticIssue] = Field(default_factory=list, description="Empty when approved=True")
+
+
+class RefinedBundle(BaseModel):
+    budget_analysis: BudgetAnalysis
+    savings_strategy: SavingsStrategy
+    debt_reduction: DebtReduction
+    overall_picture: OverallPicture
+
+
 # --- Sub-agents ---
 # TransactionFetcherAgent owns the MCP tool call and stays a plain text-output agent,
 # handing its result to the next agent via output_key + shared state. (Note: in the
@@ -354,6 +388,81 @@ analysis_pipeline = SequentialAgent(
     ],
 )
 
+critic_agent = Agent(
+    name="CriticAgent",
+    model=_model(),
+    description="Cross-checks the full analysis bundle for math errors, unrealistic recommendations, debt-payment violations, and tone before it's shown to the user.",
+    instruction=(
+        _load_skill_instruction("critic")
+        + "\n\nBudget analysis: {budget_analysis}\nSavings strategy: {savings_strategy}"
+        + "\nDebt reduction: {debt_reduction}\nOverall picture: {overall_picture}"
+    ),
+    output_schema=CriticVerdict,
+    output_key="critic_verdict",
+)
+
+
+class _EscalationChecker(BaseAgent):
+    """Stops the critique/refine LoopAgent once CriticAgent approves the bundle."""
+
+    async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
+        verdict = ctx.session.state.get("critic_verdict") or {}
+        if verdict.get("approved"):
+            yield Event(author=self.name, actions=EventActions(escalate=True))
+        else:
+            yield Event(author=self.name)
+
+
+escalation_checker = _EscalationChecker(name="EscalationChecker")
+
+refiner_agent = Agent(
+    name="RefinerAgent",
+    model=_model(),
+    description="Applies the critic's specific fixes to the analysis bundle, changing only what was flagged.",
+    instruction=(
+        _load_skill_instruction("refiner")
+        + "\n\nCritic verdict: {critic_verdict}"
+        + "\nCurrent budget analysis: {budget_analysis}\nCurrent savings strategy: {savings_strategy}"
+        + "\nCurrent debt reduction: {debt_reduction}\nCurrent overall picture: {overall_picture}"
+    ),
+    output_schema=RefinedBundle,
+    output_key="refined_bundle",
+)
+
+
+class _BundleUnpacker(BaseAgent):
+    """Redistributes RefinerAgent's RefinedBundle back into the individual state keys.
+
+    Keeps state['budget_analysis'] etc. current for the next loop iteration's
+    CriticAgent re-check, and for anything downstream that reads those keys —
+    output_key only ever writes the single 'refined_bundle' key, not the four
+    underlying ones.
+    """
+
+    async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
+        bundle = ctx.session.state.get("refined_bundle") or {}
+        yield Event(
+            author=self.name,
+            actions=EventActions(
+                state_delta={
+                    "budget_analysis": bundle.get("budget_analysis"),
+                    "savings_strategy": bundle.get("savings_strategy"),
+                    "debt_reduction": bundle.get("debt_reduction"),
+                    "overall_picture": bundle.get("overall_picture"),
+                }
+            ),
+        )
+
+
+bundle_unpacker = _BundleUnpacker(name="BundleUnpacker")
+
+critique_refine_loop = LoopAgent(
+    name="CritiqueRefineLoop",
+    description="Repeatedly critiques the analysis bundle and applies fixes until approved or the round cap is hit.",
+    sub_agents=[critic_agent, escalation_checker, refiner_agent, bundle_unpacker],
+    max_iterations=MAX_CRITIQUE_ROUNDS,
+)
+
 
 @node(rerun_on_resume=True)
 async def intake_loop(ctx: Context, node_input: str) -> AsyncGenerator[Event, None]:
@@ -418,6 +527,7 @@ root_agent = Workflow(
         (START, transaction_fetcher_agent),
         (transaction_fetcher_agent, intake_loop),
         (intake_loop, analysis_pipeline),
+        (analysis_pipeline, critique_refine_loop),
     ],
 )
 

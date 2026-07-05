@@ -4,8 +4,13 @@ Found via eval (custom_response_quality flagged it): an earlier version allocate
 recommendations from the full total_surplus without first reserving debt minimum
 payments, over-allocating by exactly the debt's minimum payment. This asserts:
 
-    sum(recommendations[].amount) + sum(debt minimum payments) + available_surplus_after_savings
-        == total_surplus (within a small tolerance for rounding)
+    sum(allocation-type recommendations[].amount) + sum(debt minimum payments)
+        + available_surplus_after_savings == total_surplus (within a small tolerance)
+
+`spending_cut`-type recommendations are excluded from the sum (added in v2 Phase 3,
+alongside SavingsRecommendation.type): a cut frees up new money from an existing
+expense that isn't part of total_surplus yet, so it neither consumes from nor adds
+to this identity — see skills/savings-strategy/SKILL.md step 5/11 and skills/critic/SKILL.md.
 """
 
 import json
@@ -50,7 +55,11 @@ def evaluate(instance):
     debts = (debt_reduction or {}).get("debts", [])
     min_payments = sum(d.get("min_payment") or 0 for d in debts)
 
-    recommended = sum(r.get("amount") or 0 for r in savings.get("recommendations", []))
+    recommended = sum(
+        r.get("amount") or 0
+        for r in savings.get("recommendations", [])
+        if r.get("type", "allocation") != "spending_cut"
+    )
     debt_context = savings.get("debt_context") or {}
     available = debt_context.get("available_surplus_after_savings")
     if available is None:
