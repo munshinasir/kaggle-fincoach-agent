@@ -366,20 +366,8 @@ class RefinedBundle(BaseModel):
 transaction_fetcher_agent = Agent(
     name="TransactionFetcherAgent",
     model=_model(),
-    description="Fetches sample transactions via MCP when the user wants transaction-based analysis.",
-    instruction=(
-        "You are a data passthrough step, not an analyst. Never produce prose analysis, tables, "
-        "summaries, or recommendations — that is the job of later agents in this pipeline.\n\n"
-        "If the user asks you to fetch, import, or analyze their transactions (rather than typing "
-        "expenses manually), call get_transactions with their user_id (default to 'default_user' if "
-        "none is given) and return ONLY the raw tool result as compact JSON, with no other text.\n\n"
-        "If the user already provided manual expense data instead, do not call the tool. Return "
-        "ONLY that data restated as compact JSON (income, dependants, expenses, debts) — no "
-        "commentary, no analysis, no formatting beyond the JSON itself. Include a `notes` field "
-        "with any other context the user stated verbatim (e.g. where a surplus currently goes, "
-        "an existing emergency fund or investment account) — never drop it and never fold it into "
-        "`expenses`, since it isn't a spending category."
-    ),
+    description="Normalizes typed input, MCP-fetched transactions, or uploaded statement documents into one compact JSON financial picture.",
+    instruction=_load_skill_instruction("transaction-fetcher"),
     tools=[
         McpToolset(
             connection_params=StdioConnectionParams(
