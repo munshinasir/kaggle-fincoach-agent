@@ -147,11 +147,21 @@
     sessionId = null;
   }
 
+  function renderHaltedTurn(message) {
+    const turn = addAssistantTurn();
+    const p = document.createElement("p");
+    p.textContent = message;
+    turn.appendChild(p);
+    sessionId = null;
+  }
+
   function handleResponse(data) {
     if (data.type === "question") {
       renderQuestionTurn(data.message);
     } else if (data.type === "security") {
       renderSecurityTurn(data.message);
+    } else if (data.type === "halted") {
+      renderHaltedTurn(data.message);
     } else if (data.type === "final") {
       renderFinalTurn(data.confirmation_html, data.recommendations_html);
     } else {

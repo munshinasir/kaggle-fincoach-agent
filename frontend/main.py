@@ -53,6 +53,22 @@ def _find_pending_interrupt(events: list) -> tuple[str, str] | None:
     return None
 
 
+def _find_halted_message(events: list) -> str | None:
+    """Returns the halt message if the run ended via halted_node's terminal
+    route (the user declined to proceed past a security check), else None.
+
+    halted_node writes no session state — its message only exists as this
+    plain-function node's own event.output (ADK's convention for
+    plain-function @node output, distinct from an LlmAgent's event.content).
+    """
+    for event in events:
+        if getattr(event.node_info, "name", None) == "halted_node" and isinstance(
+            event.output, str
+        ):
+            return event.output
+    return None
+
+
 async def _run_turn(session_id: str, new_message: types.Content) -> dict:
     events = [
         event
@@ -69,6 +85,11 @@ async def _run_turn(session_id: str, new_message: types.Content) -> dict:
         _pending[session_id] = interrupt_id
         kind = "security" if interrupt_id == "security_confirm" else "question"
         return {"type": kind, "session_id": session_id, "message": message}
+
+    halted_message = _find_halted_message(events)
+    if halted_message is not None:
+        _pending.pop(session_id, None)
+        return {"type": "halted", "session_id": session_id, "message": halted_message}
 
     _pending.pop(session_id, None)
     session = await _session_service.get_session(
