@@ -130,6 +130,31 @@ The crown jewel is the loop that runs after all four agents finish:
 - **Why it's bounded**: capped at 3 rounds so it can't loop forever chasing perfect agreement; if it
   never converges, the user still gets the last draft, honestly labeled, instead of nothing.
 
+**Why agents, and why sequential.** Isolating responsibility this way means a mistake or scope
+creep in one agent's job can never contaminate another's output — it's what lets the critic cleanly
+arbitrate between exactly-known contributions instead of untangling a single monolithic prompt. The
+pipeline is sequential, not parallel, because each stage's output is a genuine input to the next —
+savings math needs the budget numbers first, debt decisions need the savings context first — a real
+dependency chain, not an arbitrary ordering choice. Each node has its own distinguishing trait:
+
+- `TransactionFetcherAgent` — the only agent with tool access (the MCP fetch tool and document
+  reading); owns the double-counting logic across multiple statements.
+- `security_checkpoint` — **not an LLM agent at all** — a deterministic, regex-only custom node that
+  bypasses the model entirely for the one piece of logic that can't afford to be probabilistic.
+- `IntakeAgent` — pure gatekeeper, no numbers; the only agent making a 4-way routing decision
+  (ask / proceed / conversational / blocked).
+- `BudgetAnalysisAgent` — deliberately the "dumbest" agent — descriptive only, forbidden from
+  recommending anything.
+- `SavingsStrategyAgent` — prescriptive but boundaried — can suggest savings and spending cuts, but
+  can't touch debt.
+- `DebtReductionAgent` — the most complex reasoning of the four — owns invest-vs-payoff and both
+  payoff methods.
+- `OverallPictureAgent` — pure synthesis, forbidden from adding any analysis of its own.
+- `CriticAgent` — the only agent that re-derives everything from scratch rather than trusting
+  upstream output.
+- `RefinerAgent` — the only agent constrained to a minimal diff — applies just what's flagged,
+  nothing else.
+
 **Ownership-chain discipline**: `budget-analysis` only describes spending, `savings-strategy` only
 prescribes savings/spending cuts (never debt), `debt-reduction` owns every debt and invest-vs-payoff
 decision, `overall-picture` only merges and prioritizes, `critic` only flags problems, `refiner` only
