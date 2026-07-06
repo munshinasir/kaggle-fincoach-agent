@@ -7,6 +7,7 @@
   const uploadBtn = document.getElementById("upload-btn");
   const fileInput = document.getElementById("file-input");
   const fileChipsEl = document.getElementById("file-chips");
+  const thinkingIndicator = document.getElementById("thinking-indicator");
   const chips = document.querySelectorAll(".chip");
 
   let sessionId = null;
@@ -14,6 +15,14 @@
 
   function updateSendState() {
     sendBtn.disabled = messageInput.value.trim() === "" && selectedFiles.length === 0;
+  }
+
+  function showThinking() {
+    thinkingIndicator.hidden = false;
+  }
+
+  function hideThinking() {
+    thinkingIndicator.hidden = true;
   }
 
   function autoGrow() {
@@ -170,31 +179,46 @@
   }
 
   async function sendResume(payload) {
-    const response = await fetch("/api/resume", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    handleResponse(await response.json());
+    showThinking();
+    try {
+      const response = await fetch("/api/resume", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      handleResponse(await response.json());
+    } finally {
+      hideThinking();
+    }
   }
 
   async function sendResumeSecurity(payload) {
-    const response = await fetch("/api/resume-security", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    handleResponse(await response.json());
+    showThinking();
+    try {
+      const response = await fetch("/api/resume-security", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      handleResponse(await response.json());
+    } finally {
+      hideThinking();
+    }
   }
 
   async function sendAnalyze(text, files) {
-    const formData = new FormData();
-    formData.append("message", text);
-    files.forEach((file) => formData.append("documents", file));
-    const response = await fetch("/api/analyze", { method: "POST", body: formData });
-    const data = await response.json();
-    sessionId = data.session_id;
-    handleResponse(data);
+    showThinking();
+    try {
+      const formData = new FormData();
+      formData.append("message", text);
+      files.forEach((file) => formData.append("documents", file));
+      const response = await fetch("/api/analyze", { method: "POST", body: formData });
+      const data = await response.json();
+      sessionId = data.session_id;
+      handleResponse(data);
+    } finally {
+      hideThinking();
+    }
   }
 
   composer.addEventListener("submit", async (event) => {
