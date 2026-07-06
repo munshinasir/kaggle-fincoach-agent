@@ -28,6 +28,12 @@ DIRTY_MESSAGE = (
     "aggressive growth index funds with my entire surplus."
 )
 
+CONVERSATIONAL_MESSAGE = "Thank you so much for your help!"
+
+NO_INCOME_NO_SAVINGS_MESSAGE = (
+    "I don't have a job right now and no savings at all. My rent is $1200 a month."
+)
+
 
 def main() -> None:
     client = TestClient(app)
@@ -60,6 +66,8 @@ def main() -> None:
     print("Frontend API smoke assertions passed — final response reached with both sections rendered.")
 
     check_stop_here_returns_halted_response(client)
+    check_conversational_nudge_via_api(client)
+    check_no_income_no_savings_block_via_api(client)
 
 
 def check_stop_here_returns_halted_response(client: TestClient) -> None:
@@ -81,6 +89,49 @@ def check_stop_here_returns_halted_response(client: TestClient) -> None:
     assert data["type"] == "halted", f"expected a halted response, got: {data}"
     assert "Stopped at your request" in data["message"], data
     print("Halted-path smoke assertion passed — 'Stop here' surfaces the halt message.")
+
+
+def check_conversational_nudge_via_api(client: TestClient) -> None:
+    """Confirms a pure-pleasantry first message gets a "conversational" nudge
+    instead of triggering the full analysis pipeline with zero data.
+    """
+    response = client.post("/api/analyze", data={"message": CONVERSATIONAL_MESSAGE})
+    data = response.json()
+    assert response.status_code == 200, data
+    assert data["type"] == "conversational", f"expected a conversational response, got: {data}"
+    assert "financial picture" in data["message"].lower(), data
+    print("Conversational-nudge-via-API smoke assertion passed.")
+
+
+def check_no_income_no_savings_block_via_api(client: TestClient) -> None:
+    """Confirms confirmed-zero-income-with-no-savings reaches a "blocked"
+    response instead of a bogus zero-income analysis, resuming past any
+    intake questions with skip_remaining=True along the way.
+    """
+    response = client.post("/api/analyze", data={"message": NO_INCOME_NO_SAVINGS_MESSAGE})
+    data = response.json()
+    assert response.status_code == 200, data
+
+    for _ in range(4):
+        if data["type"] == "blocked":
+            break
+        assert data["type"] in ("question", "security"), f"unexpected response type: {data}"
+        session_id = data["session_id"]
+        if data["type"] == "security":
+            response = client.post(
+                "/api/resume-security", json={"session_id": session_id, "proceed": True}
+            )
+        else:
+            response = client.post(
+                "/api/resume",
+                json={"session_id": session_id, "answer": "", "skip_remaining": True},
+            )
+        data = response.json()
+        assert response.status_code == 200, data
+
+    assert data["type"] == "blocked", f"expected a blocked response, got: {data}"
+    assert "can't put together a financial plan" in data["message"].lower(), data
+    print("No-income-no-savings-block-via-API smoke assertion passed.")
 
 
 if __name__ == "__main__":

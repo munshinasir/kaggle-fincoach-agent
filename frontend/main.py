@@ -53,19 +53,26 @@ def _find_pending_interrupt(events: list) -> tuple[str, str] | None:
     return None
 
 
-def _find_halted_message(events: list) -> str | None:
-    """Returns the halt message if the run ended via halted_node's terminal
-    route (the user declined to proceed past a security check), else None.
+_TERMINAL_NODE_RESPONSE_TYPES = {
+    "halted_node": "halted",
+    "conversational_node": "conversational",
+    "no_action_node": "blocked",
+}
 
-    halted_node writes no session state — its message only exists as this
-    plain-function node's own event.output (ADK's convention for
-    plain-function @node output, distinct from an LlmAgent's event.content).
+
+def _find_terminal_message(events: list) -> tuple[str, str] | None:
+    """Returns (response_type, message) if the run ended at one of the
+    plain-function terminal nodes (halted_node, conversational_node,
+    no_action_node), else None.
+
+    These nodes write no session state — their message only exists as their
+    own event.output (ADK's convention for plain-function @node output,
+    distinct from an LlmAgent's event.content).
     """
     for event in events:
-        if getattr(event.node_info, "name", None) == "halted_node" and isinstance(
-            event.output, str
-        ):
-            return event.output
+        name = getattr(event.node_info, "name", None)
+        if name in _TERMINAL_NODE_RESPONSE_TYPES and isinstance(event.output, str):
+            return _TERMINAL_NODE_RESPONSE_TYPES[name], event.output
     return None
 
 
@@ -86,10 +93,11 @@ async def _run_turn(session_id: str, new_message: types.Content) -> dict:
         kind = "security" if interrupt_id == "security_confirm" else "question"
         return {"type": kind, "session_id": session_id, "message": message}
 
-    halted_message = _find_halted_message(events)
-    if halted_message is not None:
+    terminal = _find_terminal_message(events)
+    if terminal is not None:
+        response_type, message = terminal
         _pending.pop(session_id, None)
-        return {"type": "halted", "session_id": session_id, "message": halted_message}
+        return {"type": response_type, "session_id": session_id, "message": message}
 
     _pending.pop(session_id, None)
     session = await _session_service.get_session(
