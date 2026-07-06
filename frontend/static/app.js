@@ -164,13 +164,29 @@
     sessionId = null;
   }
 
+  function renderBlockedTurn(message) {
+    const turn = addAssistantTurn();
+    const block = document.createElement("div");
+    block.className = "no-action-block";
+    const heading = document.createElement("h3");
+    heading.textContent = "We can't help with this yet";
+    const p = document.createElement("p");
+    p.textContent = message;
+    block.appendChild(heading);
+    block.appendChild(p);
+    turn.appendChild(block);
+    sessionId = null;
+  }
+
   function handleResponse(data) {
     if (data.type === "question") {
       renderQuestionTurn(data.message);
     } else if (data.type === "security") {
       renderSecurityTurn(data.message);
-    } else if (data.type === "halted") {
+    } else if (data.type === "halted" || data.type === "conversational") {
       renderHaltedTurn(data.message);
+    } else if (data.type === "blocked") {
+      renderBlockedTurn(data.message);
     } else if (data.type === "final") {
       renderFinalTurn(data.confirmation_html, data.recommendations_html);
     } else {

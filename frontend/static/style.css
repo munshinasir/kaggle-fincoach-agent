@@ -252,3 +252,21 @@ body.started .transcript {
   color: white;
   border-color: var(--accent);
 }
+
+.no-action-block {
+  background: #fdf6ec;
+  border: 1px solid #e8d5b0;
+  border-radius: 1rem;
+  padding: 20px 24px;
+  margin: 8px 0;
+}
+
+.no-action-block h3 {
+  margin: 0 0 8px;
+  font-size: 1.1rem;
+}
+
+.no-action-block p {
+  margin: 0;
+  color: var(--text);
+}
