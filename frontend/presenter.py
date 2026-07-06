@@ -4,7 +4,7 @@ Turns the four-document bundle (budget_analysis, savings_strategy,
 debt_reduction, overall_picture) that critique_refine_loop produces into
 two HTML fragments for the frontend — no JSON, no LLM call, so tone and
 numbers can never drift from what's already in the approved bundle. See
-docs/superpowers/specs/2026-07-05-claude-web-style-frontend-design.md
+docs/superpowers/specs/2026-07-05-modern-chat-style-frontend-design.md
 ("Output Rendering") for the design this implements.
 """
 

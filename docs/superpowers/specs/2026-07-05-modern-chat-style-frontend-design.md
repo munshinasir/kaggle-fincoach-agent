@@ -1,10 +1,10 @@
-# Claude-Web-Style Frontend Redesign — Design
+# Modern-Chat-Style Frontend Redesign — Design
 
 ## Context
 
 `frontend/main.py` (275 lines) is a functional but minimal local-dev frontend: full-page-reload HTML forms, raw JSON/`<pre>` dumps of each sub-agent's output, and utilitarian styling. The backend pipeline (`app/agent.py`) is unchanged and out of scope here — this is a frontend-only redesign covering presentation and interaction, not agent behavior. The one exception: today the frontend renders every sub-agent's event text as it streams past (including the critic's own commentary and intermediate refiner passes); this redesign stops doing that and instead reads **the final bundle** once `critique_refine_loop` finishes — a single, complete picture, not four separate outputs to fetch and stitch together. See "Output Rendering" for exactly what that bundle is and where it comes from.
 
-Goal: make the local dev UI look and feel like Claude.ai's web app — same layout rhythm, calm typography, textbox placement — while presenting the analysis as readable prose instead of JSON.
+Goal: make the local dev UI look and feel like a modern chat web app — same layout rhythm, calm typography, textbox placement — while presenting the analysis as readable prose instead of JSON.
 
 ## Architecture Decisions
 
@@ -16,15 +16,15 @@ A new pure module, `frontend/presenter.py`, walks the final bundle (see "Output 
 
 ## Visual Design
 
-**Shell**: single centered column, `max-width: 48rem`. Warm off-white background (`#faf9f7`). Font stack `ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif` (Claude's actual typeface is proprietary; this stack renders with the same clean, legible character cross-platform). Light theme only — this is a local dev tool, no dark-mode requirement.
+**Shell**: single centered column, `max-width: 48rem`. Warm off-white background (`#faf9f7`). Font stack `ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif` — a clean, legible system-font stack that renders consistently cross-platform. Light theme only — this is a local dev tool, no dark-mode requirement.
 
 **Empty state** (before the first message): vertically centered block —
 - Heading: **"How can I help you today?"** (~1.75rem, medium weight)
 - One muted sub-line describing what the agent does: looks at income, spending, debts, and savings goals; produces a full picture with a debt-payoff plan and savings strategy; accepts typed descriptions or uploaded statement PDFs.
 - 3–4 clickable example-prompt chips (pill-shaped, light border) that prefill the textbox on click without auto-submitting.
-- The input box sits directly below this block, vertically centered-ish — matching where Claude Web's box sits on its own empty state.
+- The input box sits directly below this block, vertically centered-ish — matching where a modern chat UI's box sits on its own empty state.
 
-**After the first submit**: the heading/subtitle/chips disappear; the input box animates to a fixed bottom-of-viewport position; a scrollable transcript fills the space above it. Standard chat layout, matching Claude Web's transition on first message.
+**After the first submit**: the heading/subtitle/chips disappear; the input box animates to a fixed bottom-of-viewport position; a scrollable transcript fills the space above it. Standard chat layout, matching a modern chat UI's transition on first message.
 
 ## Input Box & Upload UX
 
@@ -34,7 +34,7 @@ Rounded rectangle (`border-radius: 1.25rem`), subtle border, soft focus shadow, 
 
 ## Chat Transcript
 
-- **User turns**: light-gray rounded background box (Claude Web's actual treatment). Any attached files render as small file-icon chips inside the same turn.
+- **User turns**: light-gray rounded background box (a modern chat UI's typical treatment). Any attached files render as small file-icon chips inside the same turn.
 - **Assistant turns**: no background, plain text, generous line-height, full column width.
 - **Intake questions** (`intake_loop`'s existing HITL behavior, unchanged — only the presentation changes): rendered as an ordinary assistant turn — the question in plain prose, followed inline by a small textarea + "Skip remaining questions" checkbox + a "Reply" button, styled like a smaller version of the main input box.
 - **Security checks** (`security_checkpoint`'s existing HITL behavior, unchanged): rendered as an ordinary assistant turn — the message in plain prose, followed by two calm, neutrally-styled buttons ("Continue", "Stop here"). No red/yellow alert styling — a security pause is routine, not alarming, per the calm-tone requirement.

@@ -1,8 +1,8 @@
-# Claude-Web-Style Frontend Redesign Implementation Plan
+# Modern-Chat-Style Frontend Redesign Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace `frontend/main.py`'s full-page-reload, raw-JSON local dev UI with a Claude.ai-style single-page chat interface that renders the analysis as calm, bolded prose.
+**Goal:** Replace `frontend/main.py`'s full-page-reload, raw-JSON local dev UI with a modern-chat-style single-page chat interface that renders the analysis as calm, bolded prose.
 
 **Architecture:** A thin FastAPI JSON API (`frontend/main.py`) drives the existing in-process ADK `Runner`/`Workflow` exactly as today; a new deterministic module (`frontend/presenter.py`, no LLM call) turns the one final analysis bundle into two HTML sections; a static SPA shell (`frontend/static/`) built with vanilla JS `fetch()` renders a scrolling chat transcript with no page reloads.
 
@@ -51,7 +51,7 @@ Create `tests/unit/test_presenter.py`:
 
 ```python
 """Unit tests for frontend/presenter.py — pure, deterministic, no LLM calls.
-See docs/superpowers/specs/2026-07-05-claude-web-style-frontend-design.md
+See docs/superpowers/specs/2026-07-05-modern-chat-style-frontend-design.md
 ("Output Rendering") for the design this implements.
 """
 
@@ -233,7 +233,7 @@ Turns the four-document bundle (budget_analysis, savings_strategy,
 debt_reduction, overall_picture) that critique_refine_loop produces into
 two HTML fragments for the frontend — no JSON, no LLM call, so tone and
 numbers can never drift from what's already in the approved bundle. See
-docs/superpowers/specs/2026-07-05-claude-web-style-frontend-design.md
+docs/superpowers/specs/2026-07-05-modern-chat-style-frontend-design.md
 ("Output Rendering") for the design this implements.
 """
 
@@ -528,12 +528,12 @@ Expected: FAIL — `frontend/main.py` doesn't yet serve `frontend/static/index.h
 - [ ] **Step 3: Rewrite `frontend/main.py`**
 
 ```python
-"""FastAPI backend for the Claude-Web-style financial-coach-agent frontend.
+"""FastAPI backend for the modern-chat-style financial-coach-agent frontend.
 
 Serves a static SPA shell (frontend/static/) and a small JSON API that
 drives it. Runs the agent locally via the ADK Runner (in-process — no
 separate `agents-cli playground` server required). See
-docs/superpowers/specs/2026-07-05-claude-web-style-frontend-design.md for
+docs/superpowers/specs/2026-07-05-modern-chat-style-frontend-design.md for
 the full design this implements.
 
 Run with: `uv run uvicorn frontend.main:app --port 8080`
@@ -792,11 +792,11 @@ with:
 ```
 - Frontend: `frontend/main.py` — local FastAPI JSON API (`/api/analyze`, `/api/resume`,
   `/api/resume-security`), runs the agent in-process via `Runner(app=app, ...)`. Serves a static
-  vanilla-JS SPA shell (`frontend/static/`) that renders a Claude-Web-style chat transcript with no
+  vanilla-JS SPA shell (`frontend/static/`) that renders a modern-chat-style chat transcript with no
   page reloads, and resumes the intake/security interrupts via `function_response` posts.
   `frontend/presenter.py` deterministically renders the final analysis bundle as prose HTML — no
   LLM call, no JSON shown to the user. See
-  `docs/superpowers/specs/2026-07-05-claude-web-style-frontend-design.md` for the full design.
+  `docs/superpowers/specs/2026-07-05-modern-chat-style-frontend-design.md` for the full design.
 ```
 
 - [ ] **Step 8: Commit**
@@ -1336,7 +1336,7 @@ Expected: PASS — all 3 tests green, including `test_index_serves_the_static_sh
 
 ```bash
 git add frontend/static/index.html frontend/static/style.css frontend/static/app.js
-git commit -m "Add Claude-Web-style SPA shell (HTML/CSS/JS) for the frontend"
+git commit -m "Add modern-chat-style SPA shell (HTML/CSS/JS) for the frontend"
 ```
 
 ---

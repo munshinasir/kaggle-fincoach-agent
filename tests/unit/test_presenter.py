@@ -1,5 +1,5 @@
 """Unit tests for frontend/presenter.py — pure, deterministic, no LLM calls.
-See docs/superpowers/specs/2026-07-05-claude-web-style-frontend-design.md
+See docs/superpowers/specs/2026-07-05-modern-chat-style-frontend-design.md
 ("Output Rendering") for the design this implements.
 """
 

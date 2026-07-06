@@ -1,9 +1,9 @@
-"""FastAPI backend for the Claude-Web-style financial-coach-agent frontend.
+"""FastAPI backend for the modern-chat-style financial-coach-agent frontend.
 
 Serves a static SPA shell (frontend/static/) and a small JSON API that
 drives it. Runs the agent locally via the ADK Runner (in-process — no
 separate `agents-cli playground` server required). See
-docs/superpowers/specs/2026-07-05-claude-web-style-frontend-design.md for
+docs/superpowers/specs/2026-07-05-modern-chat-style-frontend-design.md for
 the full design this implements.
 
 Run with: `uv run uvicorn frontend.main:app --port 8080`
