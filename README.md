@@ -41,38 +41,94 @@ A financial coach that:
 
 ## Architecture
 
-```mermaid
-flowchart TD
-    START([user message / uploaded documents])
-    TF[TransactionFetcherAgent<br/><i>normalizes text / MCP / PDFs</i>]
-    SEC{security_checkpoint<br/><i>deterministic PII scrub +<br/>injection-phrase removal</i>}
-    HALT[halted_node]
-    INTAKE{intake_loop<br/><i>IntakeAgent decides:<br/>ask / proceed / conversational / blocked</i>}
-    CHAT[conversational_node<br/><i>fixed friendly nudge</i>]
-    BLOCK[no_action_node<br/><i>fixed "can't help yet" block</i>]
-    PIPE[analysis_pipeline]
-    BA[BudgetAnalysisAgent]
-    SS[SavingsStrategyAgent]
-    DR[DebtReductionAgent]
-    OP[OverallPictureAgent]
-    LOOP{critique_refine_loop<br/>max 3 iterations}
-    CRITIC[CriticAgent<br/><i>re-derives every number</i>]
-    CHECK{approved?}
-    REFINE[RefinerAgent<br/><i>applies only flagged fixes</i>]
-    FINAL([final bundle -> prose UI])
+One Google ADK `Workflow` graph, not a fixed pipeline — real conditional routing, not just a
+straight line:
 
-    START --> TF --> SEC
-    SEC -- clean --> INTAKE
-    SEC -- halted --> HALT
-    INTAKE -- ask --> INTAKE
-    INTAKE -- conversational --> CHAT
-    INTAKE -- blocked --> BLOCK
-    INTAKE -- analysis --> PIPE
-    PIPE --> BA --> SS --> DR --> OP --> LOOP
-    LOOP --> CRITIC --> CHECK
-    CHECK -- yes --> FINAL
-    CHECK -- no --> REFINE --> CRITIC
 ```
+user message / uploaded documents
+        │
+        ▼
+TransactionFetcherAgent   (normalizes text / MCP / PDFs)
+        │
+        ▼
+security_checkpoint       (deterministic PII scrub + injection removal)
+        ├── halted ──────────────────► halted_node (stop)
+        └── clean
+                │
+                ▼
+        intake_loop        (IntakeAgent decides, each round)
+                ├── ask ───────────────► back to intake_loop
+                ├── conversational ────► conversational_node (friendly nudge)
+                ├── blocked ───────────► no_action_node ("can't help yet")
+                └── analysis
+                        │
+                        ▼
+                analysis_pipeline    (agent breakdown below)
+                        │
+                        ▼
+                critique_refine_loop  (the crown jewel — below)
+                        │
+                        ▼
+                final bundle → rendered as prose in the chat UI
+```
+
+The decision that shaped this graph the most isn't visible in the boxes above — it's what each
+agent inside `analysis_pipeline` is *not allowed* to do:
+
+```
+BudgetAnalysisAgent
+   → describes spending only. No recommendations, ever.
+        │
+        ▼
+SavingsStrategyAgent
+   → prescribes savings & spending-cut actions.
+     Cannot mention debt or recommend anything debt-related.
+        │
+        ▼
+DebtReductionAgent
+   → owns every debt decision, including invest-vs-payoff.
+        │
+        ▼
+OverallPictureAgent
+   → merges + prioritizes. Adds no new analysis of its own.
+```
+
+Budget analysis is kept deliberately "dumb" — purely descriptive — so it can never accidentally
+contradict a downstream agent's recommendation with an opinion of its own. Savings strategy is
+explicitly barred from recommending anything debt-related, even though it's the agent computing how
+much surplus is left over: the moment that surplus might go toward debt instead of savings, the
+decision belongs to debt reduction alone, full stop. That boundary is exactly what let a real
+contradiction bug — savings recommending an index fund while debt reduction wanted that same money
+for a 22%-APR card — get fixed in one place instead of untangling two agents' logic.
+
+The crown jewel is the loop that runs after all four agents finish:
+
+```
+                 ┌─────────────────────────────────┐
+                 │                                 │
+                 ▼                                 │
+           CriticAgent   ──approved?── No ──► RefinerAgent
+     (re-derives every number              (applies ONLY the fixes
+      itself, flags problems)               that were flagged — nothing
+                 │                           else changes)
+                Yes
+                 │
+                 ▼
+        final, signed-off bundle
+     (capped at 3 rounds — ships the
+      last draft with an honest caveat
+      if it never fully converges)
+```
+
+- **Why it's needed**: four separate LLM agents produce numbers and recommendations
+  independently — nothing upstream guarantees they still agree with each other, or with the
+  arithmetic, once combined.
+- **What role it plays**: it's the one place in the whole graph allowed to catch and fix a mistake
+  instead of just making one — an independent re-derivation of every number, and the sole referee
+  whenever two agents' recommendations conflict over the same money (like the debt-vs-investing
+  case above).
+- **Why it's bounded**: capped at 3 rounds so it can't loop forever chasing perfect agreement; if it
+  never converges, the user still gets the last draft, honestly labeled, instead of nothing.
 
 **Ownership-chain discipline**: `budget-analysis` only describes spending, `savings-strategy` only
 prescribes savings/spending cuts (never debt), `debt-reduction` owns every debt and invest-vs-payoff
