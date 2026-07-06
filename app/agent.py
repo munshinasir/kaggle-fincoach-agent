@@ -572,7 +572,7 @@ async def intake_loop(ctx: Context, node_input: str) -> AsyncGenerator[Event, No
             run_id=f"assess_{round_num}",
         )
         outcome = assessment.get("outcome")
-        if outcome == "conversational":
+        if outcome == "conversational" and round_num == 0:
             yield Event(output=original_request, route="conversational")
             return
         if outcome == "blocked":

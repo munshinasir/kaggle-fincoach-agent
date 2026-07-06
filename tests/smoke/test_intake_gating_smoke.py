@@ -156,10 +156,102 @@ async def check_savings_exemption() -> None:
     print("Savings-exemption smoke assertion passed — proceeded to analysis despite zero income.")
 
 
+async def check_conversational_never_fires_after_round_zero() -> None:
+    """Verifies that conversational_node only fires on round 0, not on round 1+.
+
+    The test targets the bug scenario: if the model somehow returns
+    outcome="conversational" on round 1 (even though the intent is round-0-only),
+    the code should block it. We can't guarantee the LLM will ask a clarifying
+    question vs. returning "conversational" on round 0 (that's model behavior),
+    but if we do get to round 1 via a resumed message, conversational_node
+    must not fire.
+
+    This test sends a first message that MAY trigger a question, and if so,
+    responds with a conversational answer; it then asserts that conversational_node
+    does not fire on the resumed round (it either asks another question, proceeds
+    to analysis, or hits blocked — anything but conversational_node).
+    """
+    session_service = InMemorySessionService()
+    runner = Runner(app=adk_app, session_service=session_service)
+    session_id = str(uuid.uuid4())
+    await session_service.create_session(app_name="app", user_id="tester", session_id=session_id)
+
+    # Round 0: send a message with some financial data
+    message = types.Content(
+        role="user",
+        parts=[
+            types.Part.from_text(
+                text="I make about $50k a year and spend maybe $3k a month."
+            )
+        ],
+    )
+    events = [
+        e
+        async for e in runner.run_async(
+            user_id="tester", session_id=session_id, new_message=message
+        )
+    ]
+
+    # Check if round 0 returned a terminal node
+    terminal = find_terminal(events)
+    if terminal is not None:
+        # If a terminal fired on round 0, it's a valid outcome (conversational, blocked, etc.)
+        # but we can't test the round-1 scenario, so we pass
+        name, output = terminal
+        print(f"Conversational-guard smoke assertion passed — round-0 ended with {name}.")
+        return
+
+    # Look for a pending question from round 0
+    interrupt_id = find_pending(events)
+    if interrupt_id is None:
+        # No interrupt means it went straight to analysis, also acceptable
+        print("Conversational-guard smoke assertion passed — proceeded to analysis from round 0.")
+        return
+
+    # We have a question on round 0 — resume with a conversational answer on round 1
+    new_message = types.Content(
+        role="user",
+        parts=[
+            types.Part(
+                function_response=types.FunctionResponse(
+                    id=interrupt_id,
+                    name=REQUEST_INPUT,
+                    response={"answer": "Thanks!", "skip_remaining": False},
+                )
+            )
+        ],
+    )
+
+    events = [
+        e
+        async for e in runner.run_async(
+            user_id="tester", session_id=session_id, new_message=new_message
+        )
+    ]
+
+    # Assert that conversational_node did NOT fire on round 1
+    terminal = find_terminal(events)
+    if terminal is not None:
+        name, output = terminal
+        assert (
+            name != "conversational_node"
+        ), (
+            f"conversational_node should only fire on round 0, not on round 1; "
+            f"but it fired on resumed answer: {output!r}"
+        )
+    # If no terminal, it either asked another question or proceeded to analysis, both acceptable
+
+    print(
+        "Conversational-guard smoke assertion passed — "
+        "round-1 conversational answer does not fire conversational_node."
+    )
+
+
 async def main() -> None:
     await check_conversational()
     await check_blocked()
     await check_savings_exemption()
+    await check_conversational_never_fires_after_round_zero()
     print("\nAll intake-gating smoke assertions passed.")
 
 
