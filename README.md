@@ -72,34 +72,36 @@ security_checkpoint       (deterministic PII scrub + injection removal)
                 final bundle → rendered as prose in the chat UI
 ```
 
-The decision that shaped this graph the most isn't visible in the boxes above — it's what each
-agent inside `analysis_pipeline` is *not allowed* to do:
+Zooming into `analysis_pipeline` itself:
 
 ```
 BudgetAnalysisAgent
-   → describes spending only. No recommendations, ever.
+   → classifies + quantifies spending
         │
         ▼
 SavingsStrategyAgent
-   → prescribes savings & spending-cut actions.
-     Cannot mention debt or recommend anything debt-related.
+   → builds the savings plan
         │
         ▼
 DebtReductionAgent
-   → owns every debt decision, including invest-vs-payoff.
+   → builds the debt payoff plan
         │
         ▼
 OverallPictureAgent
-   → merges + prioritizes. Adds no new analysis of its own.
+   → merges into one prioritized plan
 ```
 
-Budget analysis is kept deliberately "dumb" — purely descriptive — so it can never accidentally
-contradict a downstream agent's recommendation with an opinion of its own. Savings strategy is
-explicitly barred from recommending anything debt-related, even though it's the agent computing how
-much surplus is left over: the moment that surplus might go toward debt instead of savings, the
-decision belongs to debt reduction alone, full stop. That boundary is exactly what let a real
-contradiction bug — savings recommending an index fund while debt reduction wanted that same money
-for a 22%-APR card — get fixed in one place instead of untangling two agents' logic.
+The reasoning behind this split matters more than the boxes themselves. Budget analysis's entire
+job is to classify every dollar of spending into clear categories and compute the shared numbers —
+total expenses, surplus, savings rate — that both savings strategy and debt reduction build
+directly on top of; keeping that work focused on classification and alignment means the two agents
+reading its output are always working from the same accurate, consistent foundation. Savings
+strategy's job is savings and spending-cut actions specifically; whenever the money in question
+might instead go toward debt, that decision belongs to debt reduction, the one agent with the full
+picture of every balance and interest rate needed to make it well. That division of labor is
+exactly what let a real contradiction bug — savings recommending an index fund while debt reduction
+wanted that same money for a 22%-APR card — get resolved in one place instead of untangling two
+agents' logic.
 
 The crown jewel is the loop that runs after all four agents finish:
 
@@ -108,59 +110,82 @@ The crown jewel is the loop that runs after all four agents finish:
                  │                                 │
                  ▼                                 │
            CriticAgent   ──approved?── No ──► RefinerAgent
-     (re-derives every number              (applies ONLY the fixes
-      itself, flags problems)               that were flagged — nothing
-                 │                           else changes)
+     (re-derives every number,             (applies exactly the
+      consolidates the bundle)              flagged fixes)
+                 │
                 Yes
                  │
                  ▼
         final, signed-off bundle
      (capped at 3 rounds — ships the
-      last draft with an honest caveat
-      if it never fully converges)
+      most recent draft with an honest
+      caveat once the cap is reached)
 ```
 
-- **Why it's needed**: four separate LLM agents produce numbers and recommendations
-  independently — nothing upstream guarantees they still agree with each other, or with the
-  arithmetic, once combined.
-- **What role it plays**: it's the one place in the whole graph allowed to catch and fix a mistake
-  instead of just making one — an independent re-derivation of every number, and the sole referee
-  whenever two agents' recommendations conflict over the same money (like the debt-vs-investing
-  case above).
-- **Why it's bounded**: capped at 3 rounds so it can't loop forever chasing perfect agreement; if it
-  never converges, the user still gets the last draft, honestly labeled, instead of nothing.
+- **Why it's needed**: four separate agents each produce their own numbers and recommendations —
+  without a coordinating step, two well-reasoned agents can still land on guidance that quietly
+  competes for the same dollars. Finance already touches nearly everyone's daily life, and most
+  people working through it are doing so without a finance background; they deserve one clear set
+  of action items, not two agents talking past each other.
+- **What role it plays**: the critic's job goes beyond checking arithmetic — it consolidates all
+  four documents into one coherent view, catching exactly the kind of overlapping or contradictory
+  guidance described above before it ever reaches the user. That coordination is what lets every
+  other agent stay focused entirely on its own area: budget analysis stays focused purely on
+  spending, savings strategy stays focused purely on savings, because the critic is the single
+  place that reconciles them.
+- **Why it's bounded**: capped at 3 rounds so the loop keeps working toward agreement instead of
+  running indefinitely; if it reaches that cap, the user still gets the most recent draft, clearly
+  labeled, rather than nothing at all.
 
 **Why agents, and why sequential.** Isolating responsibility this way means a mistake or scope
-creep in one agent's job can never contaminate another's output — it's what lets the critic cleanly
-arbitrate between exactly-known contributions instead of untangling a single monolithic prompt. The
-pipeline is sequential, not parallel, because each stage's output is a genuine input to the next —
-savings math needs the budget numbers first, debt decisions need the savings context first — a real
-dependency chain, not an arbitrary ordering choice. Each node has its own distinguishing trait:
+creep in one agent's job stays contained to that agent's own output — it's what lets the critic
+cleanly arbitrate between exactly-known contributions instead of untangling a single monolithic
+prompt. The pipeline is sequential, not parallel, because each stage's output is a genuine input to
+the next — savings math needs the budget numbers first, debt decisions need the savings context
+first — a real dependency chain, not an arbitrary ordering choice. Each node has its own job,
+defined by what it reads and what it produces:
 
-- `TransactionFetcherAgent` — the only agent with tool access (the MCP fetch tool and document
-  reading); owns the double-counting logic across multiple statements.
-- `security_checkpoint` — **not an LLM agent at all** — a deterministic, regex-only custom node that
-  bypasses the model entirely for the one piece of logic that can't afford to be probabilistic.
-- `IntakeAgent` — pure gatekeeper, no numbers; the only agent making a 4-way routing decision
-  (ask / proceed / conversational / blocked).
-- `BudgetAnalysisAgent` — deliberately the "dumbest" agent — descriptive only, forbidden from
-  recommending anything.
-- `SavingsStrategyAgent` — prescriptive but boundaried — can suggest savings and spending cuts, but
-  can't touch debt.
-- `DebtReductionAgent` — the most complex reasoning of the four — owns invest-vs-payoff and both
-  payoff methods.
-- `OverallPictureAgent` — pure synthesis, forbidden from adding any analysis of its own.
-- `CriticAgent` — the only agent that re-derives everything from scratch rather than trusting
-  upstream output.
-- `RefinerAgent` — the only agent constrained to a minimal diff — applies just what's flagged,
-  nothing else.
-
-**Ownership-chain discipline**: `budget-analysis` only describes spending, `savings-strategy` only
-prescribes savings/spending cuts (never debt), `debt-reduction` owns every debt and invest-vs-payoff
-decision, `overall-picture` only merges and prioritizes, `critic` only flags problems, `refiner` only
-applies what was flagged. When two agents' recommendations conflict over the same money (e.g. an
-investment allocation competing with an above-threshold debt payoff), the critic — not either
-originating agent — is the sole arbiter, and debt always wins that specific conflict.
+- **`TransactionFetcherAgent`** takes in whatever the user provides — typed text, transactions
+  pulled through the MCP tool, or one or more uploaded PDF statements (bank, mortgage, utility,
+  credit card). It identifies each document's type, extracts income from deposits, places each
+  expense into its own labeled category, and reconciles every debt's balance, interest rate, and
+  minimum payment — matching a bank-statement debit against that debt's own statement so a payment
+  is captured exactly once. It outputs one compact, consistent JSON object (income, expenses by
+  category, debts, notes) that every agent after it can rely on, however varied the original input
+  was.
+- **`security_checkpoint`** takes that JSON and runs it through a deterministic, regex-based scrub
+  for SSNs, account numbers, and card numbers, plus a check for prompt-injection phrasing. Because
+  this step is plain Python rather than a model call, the same input always produces the same
+  protection — the trust layer everything downstream builds on.
+- **`IntakeAgent`** reads the normalized financial picture together with any clarifying answers
+  gathered so far, and decides what happens next: ask one more combined question, proceed straight
+  to analysis, respond to input that's purely conversational, or recognize that there's genuinely
+  no income or savings yet to plan around. It's the readiness gate that makes sure everything after
+  it runs on a financial picture that's actually ready to be analyzed.
+- **`BudgetAnalysisAgent`** reads the normalized income, expenses, and debts, categorizes every
+  expense, and computes the shared numbers the rest of the pipeline is built on: total expenses,
+  monthly surplus, savings rate, spending percentages by category, and genuine positive callouts
+  where the numbers earn them. This classification-and-alignment work gives savings strategy and
+  debt reduction one accurate foundation to reason from.
+- **`SavingsStrategyAgent`** reads the budget analysis and turns it into a concrete plan: how large
+  an emergency fund should be, specific savings and spending-cut recommendations, and automation
+  techniques to make them stick. It also computes a debt-context handoff — leftover surplus,
+  debt-to-income ratio, whether an emergency fund already exists — so debt reduction has exactly
+  what it needs to decide what happens to that same money.
+- **`DebtReductionAgent`** reads the budget analysis and the savings strategy's debt context, then
+  builds the full payoff picture: avalanche and snowball plans for every debt, and the
+  invest-vs-payoff decision for whatever surplus remains. It's the most complex reasoning step in
+  the pipeline, and the one agent with the complete picture needed to make that call well.
+- **`OverallPictureAgent`** reads all three outputs above and merges them into the single,
+  prioritized plan the user actually sees — the wins worth celebrating, and one ordered list of
+  next steps that folds savings and debt recommendations together into a single coherent plan.
+- **`CriticAgent`** reads the full bundle and independently re-derives every number from scratch,
+  while consolidating all four documents into one coherent view — catching the cases where two
+  agents' guidance would otherwise compete for the same dollars. That coordination is what keeps
+  every other agent free to stay focused entirely on its own area.
+- **`RefinerAgent`** reads the critic's specific, itemized findings and applies exactly those fixes
+  to the bundle, carrying every untouched field forward exactly as it was. A fix stays a fix —
+  precise and traceable — rather than turning into a full rewrite.
 
 ## Key concepts demonstrated
 
