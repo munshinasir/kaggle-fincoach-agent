@@ -1,0 +1,226 @@
+:root {
+  --bg: #faf9f7;
+  --text: #1a1a1a;
+  --muted: #6b6b6b;
+  --border: #e0ddd6;
+  --user-bg: #f0eee8;
+  --accent: #b45f34;
+}
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+/* Before the first message: center the empty-state block and the composer
+   together as one group, so the input box sits directly below the heading
+   — not pinned to the literal bottom of the viewport. */
+body:not(.started) {
+  justify-content: center;
+}
+
+/* After the first message: pin the composer to the bottom and let only the
+   transcript scroll, by bounding body to exactly the viewport height. */
+body.started {
+  justify-content: flex-start;
+  overflow: hidden;
+}
+
+.empty-state {
+  width: 100%;
+  max-width: 48rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 24px;
+}
+
+.empty-state h1 {
+  font-size: 1.75rem;
+  font-weight: 500;
+  margin: 0 0 12px;
+}
+
+.empty-state .subtitle {
+  color: var(--muted);
+  font-size: 0.95rem;
+  max-width: 34rem;
+  margin: 0 0 24px;
+}
+
+.example-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+
+.chip {
+  border: 1px solid var(--border);
+  background: white;
+  border-radius: 999px;
+  padding: 8px 16px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.chip:hover {
+  background: var(--user-bg);
+}
+
+.transcript {
+  display: none;
+  width: 100%;
+  max-width: 48rem;
+  padding: 24px;
+}
+
+body.started .empty-state { display: none; }
+body.started .transcript {
+  display: block;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.turn { margin-bottom: 24px; }
+
+.turn.user { display: flex; justify-content: flex-end; }
+
+.turn.user .bubble {
+  background: var(--user-bg);
+  border-radius: 1rem;
+  padding: 12px 16px;
+  display: inline-block;
+  max-width: 90%;
+}
+
+.turn.assistant { padding: 0 4px; }
+
+.turn.assistant h2 { font-size: 1.15rem; margin: 20px 0 8px; }
+.turn.assistant h3 { font-size: 1rem; margin: 16px 0 6px; }
+.turn.assistant ul, .turn.assistant ol { margin: 4px 0; padding-left: 1.4rem; }
+.turn.assistant li { margin: 4px 0; }
+
+.file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 0.8rem;
+  margin: 0 6px 6px 0;
+  background: white;
+}
+
+.file-chips {
+  width: 100%;
+  max-width: 48rem;
+  padding: 0 24px;
+  flex-shrink: 0;
+}
+
+.composer {
+  width: 100%;
+  max-width: 48rem;
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 1.25rem;
+  background: white;
+  padding: 10px 12px;
+  margin: 0 24px 24px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.composer:focus-within {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+#message-input {
+  flex: 1;
+  border: none;
+  outline: none;
+  resize: none;
+  font: inherit;
+  max-height: 200px;
+  background: transparent;
+}
+
+.icon-button {
+  border: none;
+  background: transparent;
+  font-size: 1.2rem;
+  cursor: pointer;
+  border-radius: 999px;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+}
+
+.icon-button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.send-button {
+  background: var(--accent);
+  color: white;
+}
+
+.send-button:disabled {
+  background: var(--border);
+  color: var(--muted);
+}
+
+.inline-reply {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 32rem;
+}
+
+.inline-reply textarea {
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  padding: 8px 12px;
+  font: inherit;
+  resize: vertical;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.button {
+  border: 1px solid var(--border);
+  background: white;
+  border-radius: 999px;
+  padding: 6px 16px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.button.primary {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}

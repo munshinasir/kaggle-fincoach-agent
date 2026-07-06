@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Financial Coach Agent</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div id="empty-state" class="empty-state">
+    <h1>How can I help you today?</h1>
+    <p class="subtitle">I'll look at your income, spending, debts, and savings goals and put
+      together a full picture with a debt-payoff plan and savings strategy — type it in, or
+      upload statements below.</p>
+    <div class="example-chips">
+      <button type="button" class="chip">I make $5,000/month, rent is $1,500, and I have a $4,000 credit card at 22% interest.</button>
+      <button type="button" class="chip">My income is $6,200/month. I have a car loan at 0.99% and a student loan at 5.99%.</button>
+      <button type="button" class="chip">I don't have a budget yet — here's my last month of spending by category.</button>
+      <button type="button" class="chip">Upload my bank statement and credit card statements for a full picture.</button>
+    </div>
+  </div>
+
+  <div id="transcript" class="transcript"></div>
+
+  <div id="file-chips" class="file-chips"></div>
+
+  <form id="composer" class="composer">
+    <button type="button" id="upload-btn" class="icon-button" title="Upload files" aria-label="Upload files">📎</button>
+    <input type="file" id="file-input" accept="application/pdf" multiple hidden>
+    <textarea id="message-input" placeholder="Describe your income, expenses, and any debts..." rows="1"></textarea>
+    <button type="submit" id="send-btn" class="icon-button send-button" title="Send" aria-label="Send" disabled>➤</button>
+  </form>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
