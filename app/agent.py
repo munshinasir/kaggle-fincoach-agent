@@ -7,6 +7,7 @@ import re
 import sys
 from collections.abc import AsyncGenerator
 from pathlib import Path
+from typing import Literal
 
 from google.adk.agents import Agent, BaseAgent, LoopAgent, SequentialAgent
 from google.adk.agents.context import Context
@@ -300,17 +301,23 @@ class IntakeQnA(BaseModel):
 
 
 class IntakeAssessment(BaseModel):
-    needs_clarification: bool = Field(
-        ..., description="True if the request has vague/unlabeled categories, unexplained surplus, or missing emergency-fund/investment info worth asking about"
+    outcome: Literal["ask", "proceed", "conversational", "blocked"] = Field(
+        ...,
+        description=(
+            "'ask' — needs one more clarifying question this round. 'proceed' — nothing "
+            "outstanding, ready for analysis. 'conversational' — round 0 only, no financial "
+            "content at all (pure greeting/thanks). 'blocked' — income is affirmatively "
+            "confirmed zero/absent and no savings/investment amount was ever stated."
+        ),
     )
     question: str | None = Field(
         None,
-        description="One combined question covering everything outstanding this round — never multiple separate questions",
+        description="One combined question covering everything outstanding this round — only set when outcome == 'ask'",
     )
     target_fields: list[str] = Field(
         default_factory=list, description="Which fields/categories this question is trying to clarify"
     )
-    rationale: str | None = Field(None, description="Why clarification is (or isn't) needed")
+    rationale: str | None = Field(None, description="Why this outcome was chosen")
 
 
 class IntakeAnswer(BaseModel):
@@ -531,38 +538,47 @@ async def intake_loop(ctx: Context, node_input: str) -> AsyncGenerator[Event, No
     """Bounded (max 2 rounds) clarification loop, run before analysis_pipeline.
 
     Batches everything IntakeAgent flags into one combined question per round.
-    Stops early if IntakeAgent finds nothing to ask, or the user sets
-    skip_remaining=True. Always ends by writing state['enriched_intake'] —
-    analysis_pipeline's SequentialAgent doesn't consume node_input directly,
-    so the handoff goes through state, matching the {state_var} convention
-    every other agent in this pipeline already uses.
+    Routes to "analysis" (the default), "conversational" (round 0, no financial
+    content at all), or "blocked" (income confirmed zero/absent with no savings
+    ever stated) based on IntakeAgent's outcome. Whenever the loop is about to
+    stop asking questions with a just-appended answer — either skip_remaining
+    was checked, or the round cap was just exhausted by a normal answer — one
+    final assessment call checks specifically for "blocked" before falling
+    through, so a just-confirmed no-income-no-savings conclusion can never be
+    skipped past either way. Always writes state['enriched_intake'] on the
+    "analysis" route — analysis_pipeline's SequentialAgent doesn't consume
+    node_input directly, so the handoff goes through state, matching the
+    {state_var} convention every other agent in this pipeline already uses.
     """
     original_request = node_input
     qna: list[dict] = list(ctx.state.get("intake_qna") or [])
     round_num = len(qna)
+    just_answered = False
+    force_stop = False
 
     interrupt_id = f"intake_round_{round_num}"
     if interrupt_id in ctx.resume_inputs:
         answer = ctx.resume_inputs[interrupt_id]
-        if answer.get("skip_remaining"):
-            enriched = EnrichedIntake(
-                original_request=original_request,
-                qna=[IntakeQnA(**q) for q in qna],
-                proceeded_without_full_info=True,
-            ).model_dump()
-            yield Event(output=enriched, state={"enriched_intake": enriched})
-            return
         pending_question = ctx.state.get("intake_pending_question", "")
         qna = qna + [{"question": pending_question, "answer": answer.get("answer", "")}]
         round_num += 1
+        just_answered = True
+        force_stop = bool(answer.get("skip_remaining"))
 
-    if round_num < MAX_INTAKE_ROUNDS:
+    if not force_stop and round_num < MAX_INTAKE_ROUNDS:
         assessment = await ctx.run_node(
             intake_agent,
             node_input={"original_request": original_request, "qna": qna},
             run_id=f"assess_{round_num}",
         )
-        if assessment.get("needs_clarification"):
+        outcome = assessment.get("outcome")
+        if outcome == "conversational":
+            yield Event(output=original_request, route="conversational")
+            return
+        if outcome == "blocked":
+            yield Event(output=original_request, route="blocked")
+            return
+        if outcome == "ask":
             question = assessment.get("question") or (
                 "Could you clarify any vague or missing details in your request?"
             )
@@ -573,18 +589,51 @@ async def intake_loop(ctx: Context, node_input: str) -> AsyncGenerator[Event, No
                 response_schema=IntakeAnswer,
             )
             return
+        # outcome == "proceed" falls through below
+    elif just_answered:
+        assessment = await ctx.run_node(
+            intake_agent,
+            node_input={"original_request": original_request, "qna": qna},
+            run_id=f"assess_final_{round_num}",
+        )
+        if assessment.get("outcome") == "blocked":
+            yield Event(output=original_request, route="blocked")
+            return
 
     enriched = EnrichedIntake(
         original_request=original_request,
         qna=[IntakeQnA(**q) for q in qna],
-        proceeded_without_full_info=round_num >= MAX_INTAKE_ROUNDS and bool(qna),
+        proceeded_without_full_info=force_stop or (round_num >= MAX_INTAKE_ROUNDS and bool(qna)),
     ).model_dump()
-    yield Event(output=enriched, state={"enriched_intake": enriched})
+    yield Event(output=enriched, state={"enriched_intake": enriched}, route="analysis")
 
 
 def halted_node(node_input: str) -> str:
     """Terminal node for the 'halted' route — the run ends here, analysis_pipeline never runs."""
     return node_input
+
+
+_CONVERSATIONAL_NUDGE = (
+    "Happy to chat! I'm best at building out a full financial picture, though — "
+    "share your income, expenses, and any debts (typed or as an uploaded statement) "
+    "and I'll put together a budget, savings, and debt-payoff plan for you."
+)
+
+_NO_INCOME_NO_SAVINGS_BLOCK = (
+    "We can't put together a financial plan right now — there's no income or savings "
+    "for us to build a strategy around. If that changes (a job, a benefit, or some "
+    "savings), come back and we'll take a full look."
+)
+
+
+def conversational_node(node_input: str) -> str:
+    """Terminal node for the 'conversational' route — round-0 chit-chat with no financial content."""
+    return _CONVERSATIONAL_NUDGE
+
+
+def no_action_node(node_input: str) -> str:
+    """Terminal node for the 'blocked' route — confirmed zero income, no savings ever stated."""
+    return _NO_INCOME_NO_SAVINGS_BLOCK
 
 
 @node(rerun_on_resume=True)
@@ -646,7 +695,7 @@ root_agent = Workflow(
         (START, transaction_fetcher_agent),
         (transaction_fetcher_agent, security_checkpoint),
         (security_checkpoint, {"clean": intake_loop, "halted": halted_node}),
-        (intake_loop, analysis_pipeline),
+        (intake_loop, {"analysis": analysis_pipeline, "conversational": conversational_node, "blocked": no_action_node}),
         (analysis_pipeline, critique_refine_loop),
     ],
 )
